@@ -1,0 +1,71 @@
+{
+  "name": "dsh-session-id",
+  "version": "0.1.1",
+  "description": "在 Web GUI 里一键复制会话 ID，并让 Agent 按 ID 查找任意会话及其子代理。",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "icon": "./icon.svg",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/**",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "test/**"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "bundle",
+    "session",
+    "session-id",
+    "subagent",
+    "clipboard"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lldwb/dsh-session-id.git"
+  },
+  "homepage": "https://github.com/lldwb/dsh-session-id#readme",
+  "bugs": {
+    "url": "https://github.com/lldwb/dsh-session-id/issues"
+  },
+  "meta": {
+    "title": "会话 ID",
+    "description": "复制当前会话的 ID，并让 Agent 按 ID 查看会话与它的子代理。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session"
+      ]
+    }
+  }
+}

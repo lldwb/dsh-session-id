@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session ID",
+    "description": "Copy the current session ID, and let the agent look up a session and its subagents by ID."
+  }
+}

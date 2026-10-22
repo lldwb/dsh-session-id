@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "会话 ID",
+    "description": "复制当前会话的 ID，并让 Agent 按 ID 查看会话与它的子代理。"
+  }
+}

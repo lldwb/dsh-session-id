@@ -1,0 +1,11 @@
+# dsh-session-id —— 全局挂载：任何会话都能复制自己的 ID，任何 Agent 都能按 ID 查会话。
+#
+# 这里**故意**不按 preset 挂载：
+# - 浏览器半是会话标题栏的一个按钮，属于 Web 外壳的通用能力，不属于某个模式；
+# - Host 半的工具要在标准模式里也能用（用户复制了 ID 去问任何会话）。
+#
+# 本行 id 同时是浏览器半的 locale 命名空间与 `ctx.slots.register` 的 id 前缀，
+# 但**不是**设置命名空间：本插件没有设置页，也没有 Config 字段。
+- insert:
+    - id: dsh-session-id
+      name: 'dsh-session-id'
