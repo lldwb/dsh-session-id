@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-id",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "在 Web GUI 里一键复制会话 ID，并让 Agent 按 ID 查找任意会话及其子代理。",
   "type": "module",
   "license": "MIT",
