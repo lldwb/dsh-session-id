@@ -891,6 +891,27 @@ window.__ModuleLoader__.load({
        */
       const FOLLOW_INTERVAL_MS = 700;
       const FOLLOW_MAX_ATTEMPTS = 120;
+
+      /**
+       * 「重试没生效」的失败态保留多久。
+       *
+       * 用户点了重试、Host 却拒绝（`NOT_WAITING` / `NO_LIVE_AGENT` / 传输错误）时，只把
+       * 按钮隐藏等于"什么都没发生"——用户会以为点击没被接住。失败态停留 3 秒，够看清
+       * 是"没生效"而不是"点了没反应"，又不至于一直占着 submit 位置。
+       */
+      const FAILED_VISIBLE_MS = 3000;
+
+      /**
+       * 等待期间的复查节奏。
+       *
+       * Host 侧的闸门有 120 秒等待上限，超时就从状态机里删掉记录；而进入 `waiting`
+       * 之后前端原本不再问 Host，于是按钮还挂着、点下去必然 `NOT_WAITING`（用户报告的
+       * 「点击没生效」）。这里每 8 秒复查一次：闸门没了就立刻收掉按钮。
+       * 20 次 = 160 秒，略大于 Host 的 120 秒上限，到点也收掉（此后会话事件会再次
+       * 触发 refresh，不会永久失去提示能力）。
+       */
+      const RECHECK_INTERVAL_MS = 8000;
+      const RECHECK_MAX_ATTEMPTS = 20;
       // #endregion
 
       // #region 词典
@@ -899,7 +920,8 @@ window.__ModuleLoader__.load({
         'action.retry': 'Retry',
         'hint.failed': 'Model call failed — click to retry',
         'hint.stopped': 'Stopped — click to retry',
-        'hint.retrying': 'Retrying…'
+        'hint.retrying': 'Retrying…',
+        'hint.failedToRetry': 'Retry did not take effect'
       };
 
       /** 简体中文文案。 */
@@ -907,7 +929,8 @@ window.__ModuleLoader__.load({
         'action.retry': '重试',
         'hint.failed': '模型调用失败 —— 点击重试',
         'hint.stopped': '已停止 —— 点击重试',
-        'hint.retrying': '正在重试…'
+        'hint.retrying': '正在重试…',
+        'hint.failedToRetry': '重试未生效'
       };
       // #endregion
 
@@ -916,15 +939,19 @@ window.__ModuleLoader__.load({
        * 创建一个小快照源，形状正好是槽位绑定 hook 需要的
        * `{ getSnapshot, subscribe }`（renderer 内部喂给 `useSyncExternalStore`）。
        *
-       * 状态只有三种：`hidden`（不覆盖官方按钮）、`waiting`（盖住并显示重试）、
-       * `busy`（刚点下去，等 Host 回执）。
+       * 状态有四种：
+       * - `hidden`：不覆盖官方按钮；
+       * - `waiting`：盖住并显示重试（Host 有闸门/可恢复）；
+       * - `busy`：刚点下去，等 Host 回执；
+       * - `failed`：点了但 Host 没接住（带错误码），3 秒后回到正常判定 —— 用户报告的
+       *   「点击重试没生效」就是缺这个状态：以前失败只发 `hidden`，看起来像点了没反应。
        *
        * @param {object} ctx - 浏览器插件上下文。
        * @param {string} sessionId - 当前会话 id。
        * @returns {object} 快照源（含 retry/dispose）。
        */
       function createRetryNotice(ctx, sessionId) {
-        /** @type {{ kind: 'hidden' } | { kind: 'waiting', mode: 'gate' | 'recoverable' } | { kind: 'busy' }} */
+        /** @type {{ kind: 'hidden' } | { kind: 'waiting', mode: 'gate' | 'recoverable' } | { kind: 'busy' } | { kind: 'failed', code: string }} */
         let snapshot = { kind: 'hidden' };
         const listeners = new Set();
 
@@ -939,6 +966,11 @@ window.__ModuleLoader__.load({
         /** @type {ReturnType<typeof setTimeout> | undefined} 重试之后的跟随轮询。 */
         let followTimer;
         let followAttempts = 0;
+        /** @type {ReturnType<typeof setTimeout> | undefined} 等待期间的闸门复查。 */
+        let recheckTimer;
+        let recheckAttempts = 0;
+        /** @type {ReturnType<typeof setTimeout> | undefined} 失败态的自动收尾。 */
+        let failedTimer;
 
         /**
          * 诊断追踪：默认关（`window.__DSH_TURN_RETRY_TRACE !== true` 时零成本）。
@@ -957,11 +989,52 @@ window.__ModuleLoader__.load({
           }
         };
 
+        /**
+         * 停止「等待期间闸门复查」轮询。
+         *
+         * 与 `stopFollow` 分开：那个是"重试成功后跟新一轮"，这个是"已经显示等待时确认
+         * 闸门还在”，两者语义相反（一个要拿到闸门，一个要发现闸门没了），合并会互相
+         * 污染。`emit` 到任何非 `waiting` 状态、`stop()`、`dispose()` 都要清掉它。
+         *
+         * @returns {void}
+         */
+        const stopRecheck = () => {
+          if (recheckTimer !== undefined) {
+            clearTimeout(recheckTimer);
+            recheckTimer = undefined;
+          }
+          recheckAttempts = 0;
+        };
+
         const emit = (next) => {
           if (disposed) return;
           if (sameSnapshot(snapshot, next)) return;
           snapshot = next;
+          // 只有 waiting 需要复查闸门是否还在；离开 waiting（hidden/busy/failed）就停。
+          // 定义顺序：stopRecheck 在 emit 之前、scheduleRecheck 在 emit 之后 —— 这里的
+          // 调用都发生在 createRetryNotice 返回之后，两个 const 均已初始化，不会 TDZ。
+          if (next.kind === 'waiting') scheduleRecheck();
+          else stopRecheck();
           for (const listener of listeners) listener();
+        };
+
+        /**
+         * 只问 Host「现在有可重试的东西吗」，不做任何状态转换。
+         *
+         * 抽出来是为了让两处共用同一段 RPC 语义（且不交叉依赖 `confirming` 重入保护）：
+         * `confirm()` 的首次判定/递增补查，以及 `scheduleRecheck()` 的定期复查。
+         *
+         * @returns {Promise<{ pending: boolean, recoverable: boolean } | undefined>} 无 RPC 通道时为 undefined。
+         */
+        const askHost = async () => {
+          const connection = ctx.connection;
+          if (connection === undefined || connection === null || !connection.rpc) return undefined;
+          const result = await connection.rpc.call(RPC_CHANNEL, 'pending', { sessionId });
+          const value = result && result.ok === true ? result.value : undefined;
+          return {
+            pending: !!(value && value.pending === true),
+            recoverable: !!(value && value.recoverable !== null && value.recoverable !== undefined)
+          };
         };
 
         /** 问 Host：现在有可重试的东西吗。 */
@@ -973,18 +1046,16 @@ window.__ModuleLoader__.load({
             trace('confirm.queue', { attempt });
             return;
           }
-          const connection = ctx.connection;
-          if (connection === undefined || connection === null || !connection.rpc) {
-            emit({ kind: 'hidden' });
-            return;
-          }
           confirming = true;
           try {
-            const result = await connection.rpc.call(RPC_CHANNEL, 'pending', { sessionId });
+            const probe = await askHost();
             if (disposed) return;
-            const value = result && result.ok === true ? result.value : undefined;
-            const pending = !!(value && value.pending === true);
-            const recoverable = !!(value && value.recoverable !== null && value.recoverable !== undefined);
+            if (probe === undefined) {
+              emit({ kind: 'hidden' });
+              return;
+            }
+            const pending = probe.pending;
+            const recoverable = probe.recoverable;
             trace('confirm.result', { attempt, pending, recoverable });
             if (pending) {
               emit({ kind: 'waiting', mode: 'gate' });
@@ -1037,7 +1108,10 @@ window.__ModuleLoader__.load({
             emit({ kind: 'hidden' });
             return;
           }
-          if (snapshot.kind === 'waiting' || snapshot.kind === 'busy') return;
+          // 已经显示等待 / 刚点下去 / 失败提示中：不再问 Host。
+          // `failed` 也要拦：它要完整停留 FAILED_VISIBLE_MS，不能被一次会话事件
+          // 提前冲掉（3 秒后的收尾由 failRetry 自己的定时器负责）。
+          if (snapshot.kind === 'waiting' || snapshot.kind === 'busy' || snapshot.kind === 'failed') return;
           void confirm(0);
         };
 
@@ -1091,6 +1165,61 @@ window.__ModuleLoader__.load({
           }, FOLLOW_INTERVAL_MS);
         };
 
+        /**
+         * 等待期间定期复查：Host 的闸门还在不在。
+         *
+         * 为什么需要它：Host 侧闸门有 120 秒等待上限，超时就从状态机删掉记录；而进入
+         * `waiting` 之后前端原本不再问 Host —— 按钮还挂在界面上，用户点下去必然
+         * `NOT_WAITING`（「点击没生效」的另一半原因）。这里每 8 秒问一次，闸门没了就
+         * 立刻收掉；最多 20 次（160 秒）也收掉，之后会话事件会再次触发 refresh。
+         *
+         * 与 `scheduleFollow` 的区别：那个是"重试成功后跟新一轮，要**重新拿到**闸门"；
+         * 这个是"已经显示等待时确认闸门**还在**"。两者语义相反，所以各用一个 timer。
+         *
+         * @returns {void}
+         */
+        const scheduleRecheck = () => {
+          stopRecheck();
+          const tick = async () => {
+            recheckTimer = undefined;
+            if (disposed) return;
+            // 状态已经离开 waiting（用户点了重试 → busy，或事件把它改成 hidden）就收工。
+            if (snapshot.kind !== 'waiting') {
+              trace('recheck.stop-not-waiting');
+              return;
+            }
+            recheckAttempts += 1;
+            /** @type {{ pending: boolean, recoverable: boolean } | undefined} */
+            let probe;
+            try {
+              probe = await askHost();
+            } catch {
+              // 传输层失败：不当作「闸门没了」，下一轮再试（Host 可能只是短暂断连）。
+              probe = undefined;
+            }
+            if (disposed || snapshot.kind !== 'waiting') return;
+            if (probe === undefined) {
+              trace('recheck.transport-error', { attempt: recheckAttempts });
+            } else if (probe.pending === false && probe.recoverable === false) {
+              // Host 已经没有闸门了：按钮必须立刻消失，否则就是"点了没生效"。
+              trace('recheck.gone', { attempt: recheckAttempts });
+              emit({ kind: 'hidden' });
+              return;
+            }
+            if (recheckAttempts >= RECHECK_MAX_ATTEMPTS) {
+              trace('recheck.give-up', { attempt: recheckAttempts });
+              emit({ kind: 'hidden' });
+              return;
+            }
+            recheckTimer = setTimeout(() => {
+              void tick();
+            }, RECHECK_INTERVAL_MS);
+          };
+          recheckTimer = setTimeout(() => {
+            void tick();
+          }, RECHECK_INTERVAL_MS);
+        };
+
         /** 第一个订阅者进来：借 binding、订阅、立刻算一次。 */
         const start = () => {
           if (disposed || binding !== undefined) return;
@@ -1103,9 +1232,14 @@ window.__ModuleLoader__.load({
           refresh();
         };
 
-        /** 最后一个订阅者离开：拆订阅与补查定时器。 */
+        /** 最后一个订阅者离开：拆订阅与全部定时器。 */
         const stop = () => {
           stopFollow();
+          stopRecheck();
+          if (failedTimer !== undefined) {
+            clearTimeout(failedTimer);
+            failedTimer = undefined;
+          }
           if (confirmTimer !== undefined) {
             clearTimeout(confirmTimer);
             confirmTimer = undefined;
@@ -1121,13 +1255,39 @@ window.__ModuleLoader__.load({
           }
         };
 
+        /**
+         * 重试被拒绝/失败：进入可见的 `failed` 态，3 秒后回到正常判定。
+         *
+         * 这是「点击重试没生效」的正面修复：以前这里只 `emit({kind:'hidden'})`，用户
+         * 看到按钮消失、什么都没发生，只能怀疑点击没被接住。失败态带错误码（文案不逐
+         * 个 code 写，直接拼进 title），并且不立刻改回 waiting/hidden —— 否则一次
+         * `refresh()` 就把它盖掉了。
+         *
+         * @param {string} code - 失败码（Host 的 `error.code`，或 `NO_CONNECTION` / `TRANSPORT`）。
+         * @returns {void}
+         */
+        const failRetry = (code) => {
+          trace('retry.failed', { code });
+          emit({ kind: 'failed', code });
+          if (failedTimer !== undefined) clearTimeout(failedTimer);
+          failedTimer = setTimeout(() => {
+            failedTimer = undefined;
+            if (disposed) return;
+            // 3 秒后重新按会话状态判定，而不是硬 hidden：这期间 Host 可能又开了新闸门。
+            refresh();
+            // refresh 若没把它改成 waiting，就收掉失败态。
+            if (snapshot.kind === 'failed') emit({ kind: 'hidden' });
+          }, FAILED_VISIBLE_MS);
+        };
+
         /** 用户点了重试图标。 */
         const retry = async () => {
           trace('retry.begin');
+          // 顺序：busy（等回执）→ 成功则 hidden + 跟随，失败则 failed（可见 3 秒）。
           emit({ kind: 'busy' });
           const connection = ctx.connection;
           if (connection === undefined || connection === null || !connection.rpc) {
-            emit({ kind: 'hidden' });
+            failRetry('NO_CONNECTION');
             return;
           }
           try {
@@ -1139,12 +1299,14 @@ window.__ModuleLoader__.load({
               scheduleFollow();
               return;
             }
-            trace('retry.failed', { code: result && result.error ? result.error.code : undefined });
-            emit({ kind: 'hidden' });
-            // 失败后让 refresh 重新判定（例如 Host 已经另开闸门）。
-            refresh();
+            const error = result && result.error;
+            const code =
+              error !== null && typeof error === 'object' && typeof error.code === 'string' && error.code !== ''
+                ? error.code
+                : 'RETRY_REJECTED';
+            failRetry(code);
           } catch {
-            emit({ kind: 'hidden' });
+            failRetry('TRANSPORT');
           }
         };
 
@@ -1178,6 +1340,8 @@ window.__ModuleLoader__.load({
         if (left === right) return true;
         if (left.kind !== right.kind) return false;
         if (left.kind === 'waiting') return left.mode === right.mode;
+        // failed 带错误码：两个不同的失败码要各自触发一次重渲染（title 里的码不同）。
+        if (left.kind === 'failed') return left.code === right.code;
         return true;
       }
 
@@ -1331,6 +1495,18 @@ window.__ModuleLoader__.load({
         transition: 'background-color .1s',
         outlineOffset: '2px'
       };
+
+      /**
+       * 失败态的按钮配色。
+       *
+       * 几何完全沿用 {@link BUTTON_STYLE}（34×34、正圆、同一位置）—— 用户视线还停在
+       * 原来的 submit 位置上，只换颜色最容易被读到。底色是 danger 红并配自己的 hover
+       * 规则（见样式表），否则会落回蓝色 hover、看起来像"又能点了"。
+       */
+      const FAILED_BUTTON_STYLE = {
+        ...BUTTON_STYLE,
+        background: 'var(--dsw-alias-label-danger, #d92d20)'
+      };
       // #endregion
 
       // #region 组件
@@ -1359,7 +1535,14 @@ window.__ModuleLoader__.load({
 
         const t = props.t;
         const busy = state.kind === 'busy';
-        const hint = state.kind === 'waiting' && state.mode === 'recoverable' ? t('hint.stopped') : t('hint.failed');
+        const failed = state.kind === 'failed';
+        // 失败态把错误码直接拼进提示（不为每个 code 写一条文案；码本身就是给用户
+        // 和排查看的，比如 NOT_WAITING 说明 Host 那侧已经没有闸门了）。
+        const hint = failed
+          ? `${t('hint.failedToRetry')} (${state.code})`
+          : state.kind === 'waiting' && state.mode === 'recoverable'
+            ? t('hint.stopped')
+            : t('hint.failed');
 
         return jsx('div', {
           style: overlayStyle(buttonTopOffset()),
@@ -1368,12 +1551,14 @@ window.__ModuleLoader__.load({
             type: 'button',
             // 配色/圆角/尺寸来自 BUTTON_STYLE；hover 与 disabled 的观感由注入的样式表
             // 负责（与官方按钮同一条规则），这里不再内联 opacity —— 否则会和 :disabled
-            // 的 `.4` 叠乘，重试中变得过分透明。
-            style: BUTTON_STYLE,
+            // 的 `.4` 叠乘，重试中变得过分透明。失败态换成 danger 红并带自己的 hover
+            // 规则（见样式表里的 `[data-turn-retry-failed]`）。
+            style: failed ? FAILED_BUTTON_STYLE : BUTTON_STYLE,
             'data-dsh-turn-retry-button': '',
+            ...(failed ? { 'data-turn-retry-failed': '' } : {}),
             disabled: busy,
             title: hint,
-            'aria-label': busy ? t('hint.retrying') : `${t('action.retry')} — ${hint}`,
+            'aria-label': busy ? t('hint.retrying') : failed ? hint : `${t('action.retry')} — ${hint}`,
             onClick: () => {
               void props.retryNotice.retry();
             },
@@ -1460,6 +1645,8 @@ window.__ModuleLoader__.load({
             '[data-dsh-turn-retry-button]{corner-shape:round;border-radius:999px}',
             // 与官方 submit 按钮一致：hover 换 hover 色（不是变深/变透明）。
             '[data-dsh-turn-retry-button]:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
+            // 失败态：hover 保持红色系（否则会落回上面的蓝色，看起来像恢复了）。
+            '[data-dsh-turn-retry-button][data-turn-retry-failed]:hover:not(:disabled){background:var(--dsw-alias-label-danger-hover,#b42318)}',
             // 与官方一致：禁用时整颗淡化到 .4。
             '[data-dsh-turn-retry-button]:disabled{opacity:.4;cursor:default}'
           ].join('');

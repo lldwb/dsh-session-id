@@ -86,6 +86,35 @@ test('retry：没有等待时返回 NOT_WAITING（不假装成功）', async () 
   assertFailure(await handler('retry', { sessionId: 's1' }), 'NOT_WAITING');
 });
 
+test('retry：闸门已不在但有 live agent 时用 followup 兜底（界面状态比 Host 慢一拍）', async () => {
+  const gate = new RetryGate({ waitMs: 60_000 });
+  const calls = [];
+  const handler = createRpcHandler({
+    gate,
+    driveRetry: async (sessionId) => {
+      calls.push(sessionId);
+      return { ok: true };
+    },
+  });
+
+  // 闸门已经超时/被清掉：button 还挂在界面上，用户点了它。
+  const result = await handler('retry', { sessionId: 's1' });
+  assert.deepEqual(result, { ok: true, value: { retried: true, via: 'followup' } });
+  assert.deepEqual(calls, ['s1']);
+});
+
+test('retry：兜底 followup 失败时把真实原因透出（不吞成成功）', async () => {
+  const gate = new RetryGate({ waitMs: 60_000 });
+  const handler = createRpcHandler({
+    gate,
+    driveRetry: async () => ({ ok: false, code: 'NO_LIVE_AGENT', message: 'This session has no live agent to drive.' }),
+  });
+
+  const result = await handler('retry', { sessionId: 's1' });
+  assertFailure(result, 'NO_LIVE_AGENT');
+  assert.match(result.error.message, /live agent/);
+});
+
 test('cancel：按默认语义放行', async () => {
   const gate = new RetryGate({ waitMs: 60_000 });
   const { decision } = gate.open('s1', failureInfo(), undefined);
