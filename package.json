@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-id",
-  "version": "0.2.0",
-  "description": "会话增强：一键复制会话 ID、让 Agent 按 ID 查找会话与子代理，并把会话分享成免登录只读链接。",
+  "version": "1.0.0",
+  "description": "会话增强：复制会话 ID、按 ID 查会话与子代理、把会话分享成免登录只读链接，并在模型失败/停止后一键重试。",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -41,7 +41,10 @@
     "session-id",
     "subagent",
     "clipboard",
-    "share"
+    "share",
+    "retry",
+    "turn",
+    "model-request"
   ],
   "repository": {
     "type": "git",
@@ -53,7 +56,7 @@
   },
   "meta": {
     "title": "会话增强",
-    "description": "复制会话 ID、按 ID 查看会话与子代理，并把会话分享成免登录只读链接。"
+    "description": "一个插件三件事：复制会话 ID、按 ID 查会话与子代理、会话分享成只读链接；模型失败或停止后一键重试。"
   },
   "dsh": {
     "bundle": {

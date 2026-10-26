@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Enhance",
-    "description": "Copy the session ID, look up a session and its subagents by ID, and share a session as a read-only link that needs no sign-in."
+    "description": "Copy the session ID, look up a session and its subagents, share a session as a read-only link, and retry a failed or stopped model call with one click."
   }
 }

@@ -1,7 +1,20 @@
 /**
- * `dsh-session-id` —— 浏览器半：会话标题栏右上角的「分享会话」与「复制会话 ID」两个按钮。
+ * `dsh-session-id` —— 浏览器半：会话标题栏的「分享会话」「复制会话 ID」与 composer 的
+ * 「失败重试」三个组件。
  *
- * ## 这两个按钮解决什么问题
+ * ## 这个 bundle 里有三个组件
+ *
+ * 1. **会话 ID**：标题栏一键复制 session id，交给 Agent 按 id 查会话、子代理与历史；
+ * 2. **会话分享**：标题栏生成只读分享链接（免登录的只读 HTML 页由 Host 半渲染）；
+ * 3. **失败重试**：模型调用失败或用户中途停止后，把 composer 右下角的发送按钮盖成
+ *    「重试」，点一下原地重试（对齐 Codex 的交互）。
+ *
+ * 第 3 个组件并入自 `dsh-turn-retry` 插件（该包不再单独发布）。两个插件的顶层标识符
+ * 大面积重名（NS / en / zh / SLOT_NAME / SLOT_ID / order / BUTTON_STYLE / inject /
+ * apply …），所以原 dsh-turn-retry 的 factory 内部整体包在本文件中间偏后的 `retryHalf`
+ * IIFE 里：行为与注释原样保留，作用域隔离，不需要逐个改名。
+ *
+ * ## 会话 ID 与分享解决什么问题
  *
  * Web GUI 的会话标题栏右侧原本只有「⋯」（下载 Session 日志 / 反馈）。用户有两个高频
  * 但无处安放的诉求：
@@ -761,6 +774,726 @@ window.__ModuleLoader__.load({
     }
     // #endregion
 
+    // #region 失败重试（并入自 dsh-turn-retry 浏览器半）
+    /**
+     * 第三个组件「失败重试」并入自 `dsh-turn-retry` 插件（该包不再单独发布）。
+     *
+     * 整体包进一个 IIFE 而不是逐个改名：两个插件的顶层标识符大面积重名（NS / en / zh /
+     * SLOT_NAME / SLOT_ID / order / BUTTON_STYLE / inject / apply …），逐个改名会制造
+     * 一片「看不出为什么」的 diff，而且以后同步上游修复时对不上。IIFE 给这半边一个
+     * 独立作用域，行为与注释原样保留，只把外壳换成本块末尾的 return。
+     */
+    /**
+     * 以下为原 `dsh-turn-retry/client.js` 的模块说明，原样保留（仅去掉 @module 行）：
+     *
+     * `dsh-turn-retry` —— 浏览器半：把 composer 右下角那个官方按钮变成「重试」。
+     *
+     * ## 交互（对齐 Codex）
+     *
+     * 模型调用失败（自动重试耗尽）、或用户中途点了停止之后，composer 右下角**官方发送/
+     * 停止按钮的位置**会变成一个圆形「重试」图标；点它直接重试 —— 不需要输入任何文字，
+     * 也不出现额外的横条或对话框。没有可重试的状态时，这个覆盖层根本不存在，官方按钮
+     * 原样可用。
+     *
+     * ## 为什么是"覆盖"而不是"新增一个按钮"
+     *
+     * DSH 的 composer submit 按钮是 shell 自己的（`InputBar` 的 `trailing` 区），插件没有
+     * 替换它的插槽。可用的两个扩展位是：
+     *
+     * - `conversation.input.right`：渲染在 submit 按钮**之前** —— 只能是"旁边多一个按钮"；
+     * - `conversation.input.overlay`：渲染在 card 内部的绝对定位锚点里 —— 可以**盖住**
+     *   submit 按钮，视觉上就是"那个按钮变成了重试"。
+     *
+     * 实测几何（1280×900，单行输入）：card 高 114，submit 按钮 34×34，距 card 右/下各 8px。
+     * 覆盖层的 `right: 8px` 固定；`top` 由 card 实际高度算出（`height - 8 - 34`），因此
+     * 多行输入、附件行把 card 撑高时也能贴住按钮而不是飘走。
+     *
+     * ## 状态从哪里来
+     *
+     * 两路合一，都由 Host 的 `pending` 端点回答：
+     *
+     * - `gate`：模型失败、loop 还停在原地（真正可原地重试）；
+     * - `recoverable`：用户点过停止，turn 已结束（Host 用 `agent.followup` 驱动新一轮）。
+     *
+     * 本地只做"要不要去问 Host"的粗筛：turn 正在跑且最后一条模型事件是失败的 attempt，
+     * 或者 turn 刚结束（可能就是被停止的）。筛中才发一次 RPC，其余时候零请求。
+     *
+     * ## 为什么状态不放在组件里
+     *
+     * 这个 bundle 拿不到 `react`（只有 `react/jsx-runtime`），因此没有 `useState`。
+     * 状态由槽位的 `hooks` 注入面承载：`inject()` 为每个 Session 造一个最小快照源
+     * （`{ getSnapshot, subscribe }`），renderer 会把它绑成组件 props 上的
+     * `useRetryNotice(selector)`。快照源在第一个订阅者出现时才订阅会话事件流，最后一个
+     * 订阅者离开时拆掉。
+     *
+     */
+    const retryHalf = (() => {
+      // `jsx`/`jsxs` 来自外层 factory 的同一个 require。原文件在这里还有一句注释：
+      // 「shell 静态模块表里唯一可安全解析的 React 说明符；引 `react` 本身会抛
+      // `client-modules: require("react") missed the module table`（只在浏览器里报）」。
+      // 合并后外层已经 require 过，这里不重复 require。
+      // #region 常量
+      /** 本插件的 locale 命名空间，与 Loader 行 id / 包名一致。 */
+      const NS = 'dsh-turn-retry';
+
+      /**
+       * 浏览器半的版本戳（与 `package.json` 的 version 保持一致）。
+       *
+       * 同时写进 `document.documentElement.dataset.dshTurnRetry`：排查「改了没生效」时，
+       * 在控制台执行 `document.documentElement.dataset.dshTurnRetry` 就能确认页面里
+       * 加载的到底是哪一版，不必翻网络面板。
+       */
+      const CLIENT_VERSION = '0.2.3';
+
+      /**
+       * 槽位：composer card 内部的绝对定位锚点。
+       *
+       * 它渲染在 card 内、位于 submit 按钮之前，因此这里放一个同样 34×34、同样贴右下角
+       * 的元素就能盖住官方按钮 —— 视觉上等价于"把那个按钮换成重试图标"。
+       */
+      const SLOT_NAME = 'conversation.input.overlay';
+
+      /** 本贡献在槽位里的 id。 */
+      const SLOT_ID = 'turn-retry';
+
+      /** 排序：0 足够，槽位里通常只有本插件一条。 */
+      const SLOT_ORDER = 0;
+
+      /** 与 Host 半 `lib/rpc.mjs` 的 `RPC_CHANNEL` 必须一致。 */
+      const RPC_CHANNEL = '/dsh-turn-retry';
+
+      /** 官方 submit 按钮的边长（实测 34）。 */
+      const BUTTON_SIZE = 34;
+
+      /** 官方 submit 按钮距 card 右/下的内缩（实测 8）。 */
+      const BUTTON_INSET = 8;
+
+      /** card 单行时的默认高度（实测 114），读不到 DOM 时用它兜底。 */
+      const DEFAULT_CARD_HEIGHT = 114;
+
+      /**
+       * "看起来失败"之后隔多久查一次 Host。
+       *
+       * 失败事件（`assistant/attempt`）先落盘，Host 的 `agent/request-error` 稍后才
+       * 触发并打开闸门；如果时序反了，第一次 `pending` 会返回 false。所以查到 false
+       * 时按递增间隔补查几次，而不是立刻放弃或改成轮询。
+       */
+      const CONFIRM_DELAYS_MS = [150, 500, 1200];
+
+      /**
+       * 点过重试之后的跟随节奏。
+       *
+       * 重试会再跑一整轮（自动重试 5 次，十几秒）。这期间 session 仍是 running、界面
+       * 上不该有按钮；但等它再次失败时，Host 的新闸门可能在"最后一条失败事件"之后
+       * 才打开 —— 只靠一次补查（1.85 秒）会错过，随后闸门被孤儿保护放行、按钮就再也
+       * 不出现了。所以重试之后用一个小间隔的**有限**跟随轮询，直到拿到新闸门或这一轮
+       * 结束为止。
+       */
+      const FOLLOW_INTERVAL_MS = 700;
+      const FOLLOW_MAX_ATTEMPTS = 120;
+      // #endregion
+
+      // #region 词典
+      /** 英文文案。 */
+      const en = {
+        'action.retry': 'Retry',
+        'hint.failed': 'Model call failed — click to retry',
+        'hint.stopped': 'Stopped — click to retry',
+        'hint.retrying': 'Retrying…'
+      };
+
+      /** 简体中文文案。 */
+      const zh = {
+        'action.retry': '重试',
+        'hint.failed': '模型调用失败 —— 点击重试',
+        'hint.stopped': '已停止 —— 点击重试',
+        'hint.retrying': '正在重试…'
+      };
+      // #endregion
+
+      // #region 快照源与状态
+      /**
+       * 创建一个小快照源，形状正好是槽位绑定 hook 需要的
+       * `{ getSnapshot, subscribe }`（renderer 内部喂给 `useSyncExternalStore`）。
+       *
+       * 状态只有三种：`hidden`（不覆盖官方按钮）、`waiting`（盖住并显示重试）、
+       * `busy`（刚点下去，等 Host 回执）。
+       *
+       * @param {object} ctx - 浏览器插件上下文。
+       * @param {string} sessionId - 当前会话 id。
+       * @returns {object} 快照源（含 retry/dispose）。
+       */
+      function createRetryNotice(ctx, sessionId) {
+        /** @type {{ kind: 'hidden' } | { kind: 'waiting', mode: 'gate' | 'recoverable' } | { kind: 'busy' }} */
+        let snapshot = { kind: 'hidden' };
+        const listeners = new Set();
+
+        let binding;
+        let unsubscribeEvents;
+        let unsubscribeSession;
+        let confirming = false;
+        let recheck = false;
+        let disposed = false;
+        /** @type {ReturnType<typeof setTimeout> | undefined} */
+        let confirmTimer;
+        /** @type {ReturnType<typeof setTimeout> | undefined} 重试之后的跟随轮询。 */
+        let followTimer;
+        let followAttempts = 0;
+
+        /**
+         * 诊断追踪：默认关（`window.__DSH_TURN_RETRY_TRACE !== true` 时零成本）。
+         *
+         * @param {string} step - 阶段名。
+         * @param {object} [extra] - 附加字段。
+         */
+        const trace = (step, extra) => {
+          try {
+            if (typeof window === 'undefined' || window.__DSH_TURN_RETRY_TRACE !== true) return;
+            window.__turnRetryTrace = window.__turnRetryTrace || [];
+            window.__turnRetryTrace.push({ step, at: Date.now(), ...(extra || {}) });
+            if (window.__turnRetryTrace.length > 300) window.__turnRetryTrace.shift();
+          } catch {
+            // 诊断不能影响功能。
+          }
+        };
+
+        const emit = (next) => {
+          if (disposed) return;
+          if (sameSnapshot(snapshot, next)) return;
+          snapshot = next;
+          for (const listener of listeners) listener();
+        };
+
+        /** 问 Host：现在有可重试的东西吗。 */
+        const confirm = async (attempt) => {
+          if (disposed) return;
+          if (confirming) {
+            // 已经有一次确认在飞：不丢弃这次信号，标记完成后再查一遍。
+            recheck = true;
+            trace('confirm.queue', { attempt });
+            return;
+          }
+          const connection = ctx.connection;
+          if (connection === undefined || connection === null || !connection.rpc) {
+            emit({ kind: 'hidden' });
+            return;
+          }
+          confirming = true;
+          try {
+            const result = await connection.rpc.call(RPC_CHANNEL, 'pending', { sessionId });
+            if (disposed) return;
+            const value = result && result.ok === true ? result.value : undefined;
+            const pending = !!(value && value.pending === true);
+            const recoverable = !!(value && value.recoverable !== null && value.recoverable !== undefined);
+            trace('confirm.result', { attempt, pending, recoverable });
+            if (pending) {
+              emit({ kind: 'waiting', mode: 'gate' });
+              return;
+            }
+            if (recoverable) {
+              emit({ kind: 'waiting', mode: 'recoverable' });
+              return;
+            }
+            // Host 还没开闸门：按递增间隔补查几次（事件先落盘、waterfall 后触发的时序差）。
+            const delay = CONFIRM_DELAYS_MS[attempt];
+            if (delay === undefined) {
+              if (snapshot.kind !== 'busy') emit({ kind: 'hidden' });
+              return;
+            }
+            if (snapshot.kind !== 'busy') emit({ kind: 'hidden' });
+            confirmTimer = setTimeout(() => {
+              confirmTimer = undefined;
+              void confirm(attempt + 1);
+            }, delay);
+          } catch {
+            // 传输层失败（Host 重启、连接断开）按"没有提示"处理，下一次事件再试。
+            if (!disposed && snapshot.kind !== 'busy') emit({ kind: 'hidden' });
+          } finally {
+            confirming = false;
+            if (recheck) {
+              recheck = false;
+              // 已经显示等待时不需要再确认。
+              if (!disposed && snapshot.kind !== 'waiting') void confirm(0);
+            }
+          }
+        };
+
+        /** 事件/会话状态变化时重算。 */
+        const refresh = () => {
+          if (disposed) return;
+          const session = binding?.session?.getSnapshot();
+          if (!session) {
+            emit({ kind: 'hidden' });
+            return;
+          }
+          if (session.running === true) {
+            // 跑着的时候：只有"最后一条模型事件是失败的 attempt"才值得问 Host。
+            if (!lastModelEventIsFailure(binding)) {
+              emit({ kind: 'hidden' });
+              return;
+            }
+          } else if (!justEnded(binding)) {
+            // 刚结束的 turn 可能是被停止的：只有最近一条事件是 turn/end 时才问。
+            emit({ kind: 'hidden' });
+            return;
+          }
+          if (snapshot.kind === 'waiting' || snapshot.kind === 'busy') return;
+          void confirm(0);
+        };
+
+        /**
+         * 停止「重试之后」的跟随轮询。
+         *
+         * @returns {void}
+         */
+        const stopFollow = () => {
+          if (followTimer !== undefined) {
+            clearTimeout(followTimer);
+            followTimer = undefined;
+          }
+          followAttempts = 0;
+        };
+
+        /**
+         * 重试之后跟随这一轮，直到它再次进入可重试状态或结束。
+         *
+         * 只在 `retry` 成功后启动：重试会再跑一整轮（自动重试），期间不该出现按钮；
+         * 但新闸门可能在事件之后才打开，单次补查会错过 —— 见 `FOLLOW_INTERVAL_MS` 的注释。
+         *
+         * @returns {void}
+         */
+        const scheduleFollow = () => {
+          stopFollow();
+          const tick = async () => {
+            followTimer = undefined;
+            if (disposed) return;
+            const session = binding?.session?.getSnapshot();
+            if (!session || session.running !== true) {
+              trace('follow.stop-idle');
+              return;
+            }
+            followAttempts += 1;
+            await confirm(0);
+            if (snapshot.kind === 'waiting') {
+              trace('follow.found');
+              return;
+            }
+            if (followAttempts >= FOLLOW_MAX_ATTEMPTS) {
+              trace('follow.give-up');
+              return;
+            }
+            followTimer = setTimeout(() => {
+              void tick();
+            }, FOLLOW_INTERVAL_MS);
+          };
+          followTimer = setTimeout(() => {
+            void tick();
+          }, FOLLOW_INTERVAL_MS);
+        };
+
+        /** 第一个订阅者进来：借 binding、订阅、立刻算一次。 */
+        const start = () => {
+          if (disposed || binding !== undefined) return;
+          const sessions = ctx.sessions;
+          if (sessions === undefined || sessions === null || typeof sessions.binding !== 'function') return;
+          binding = sessions.binding(sessionId);
+          if (binding === undefined || binding === null) return;
+          unsubscribeEvents = binding.eventSource.subscribe(refresh);
+          unsubscribeSession = binding.session.subscribe(refresh);
+          refresh();
+        };
+
+        /** 最后一个订阅者离开：拆订阅与补查定时器。 */
+        const stop = () => {
+          stopFollow();
+          if (confirmTimer !== undefined) {
+            clearTimeout(confirmTimer);
+            confirmTimer = undefined;
+          }
+          unsubscribeEvents?.();
+          unsubscribeSession?.();
+          unsubscribeEvents = undefined;
+          unsubscribeSession = undefined;
+          if (binding !== undefined) {
+            binding = undefined;
+            // 离开界面后状态归零，回来时重新问 Host。
+            snapshot = { kind: 'hidden' };
+          }
+        };
+
+        /** 用户点了重试图标。 */
+        const retry = async () => {
+          trace('retry.begin');
+          emit({ kind: 'busy' });
+          const connection = ctx.connection;
+          if (connection === undefined || connection === null || !connection.rpc) {
+            emit({ kind: 'hidden' });
+            return;
+          }
+          try {
+            const result = await connection.rpc.call(RPC_CHANNEL, 'retry', { sessionId });
+            if (result && result.ok === true) {
+              trace('retry.ok', { via: result.value && result.value.via });
+              emit({ kind: 'hidden' });
+              // 重试会再跑一整轮：跟它，等下一次可重试状态。
+              scheduleFollow();
+              return;
+            }
+            trace('retry.failed', { code: result && result.error ? result.error.code : undefined });
+            emit({ kind: 'hidden' });
+            // 失败后让 refresh 重新判定（例如 Host 已经另开闸门）。
+            refresh();
+          } catch {
+            emit({ kind: 'hidden' });
+          }
+        };
+
+        return {
+          getSnapshot: () => snapshot,
+          subscribe: (listener) => {
+            listeners.add(listener);
+            if (listeners.size === 1) start();
+            return () => {
+              listeners.delete(listener);
+              if (listeners.size === 0) stop();
+            };
+          },
+          retry,
+          dispose: () => {
+            disposed = true;
+            stop();
+            listeners.clear();
+          }
+        };
+      }
+
+      /**
+       * 判两份快照是否等价。
+       *
+       * @param {object} left - 旧快照。
+       * @param {object} right - 新快照。
+       * @returns {boolean} 是否等价。
+       */
+      function sameSnapshot(left, right) {
+        if (left === right) return true;
+        if (left.kind !== right.kind) return false;
+        if (left.kind === 'waiting') return left.mode === right.mode;
+        return true;
+      }
+
+      /**
+       * 取事件窗口里倒序第一个"模型相关"事件。
+       *
+       * @param {object} binding - Session binding。
+       * @returns {{ type: string, event?: object } | undefined} 最近一条模型相关事件。
+       */
+      function lastModelEvent(binding) {
+        const window = binding.eventSource.getSnapshot();
+        const entries = window && Array.isArray(window.entries) ? window.entries : [];
+        for (let index = entries.length - 1; index >= 0; index -= 1) {
+          const entry = entries[index];
+          if (!entry || entry.type !== 'event') continue;
+          const event = entry.event;
+          if (!event) continue;
+          if (event.type === 'turn/end') return { type: 'turn/end', event };
+          if (event.type === 'assistant/message') return { type: 'assistant/message', event };
+          if (event.type === 'assistant/attempt') return { type: 'assistant/attempt', event };
+        }
+        return undefined;
+      }
+
+      /**
+       * 这一轮是不是"看起来失败了"：最后一个模型事件是失败的 attempt。
+       *
+       * @param {object} binding - Session binding。
+       * @returns {boolean} 是否失败。
+       */
+      function lastModelEventIsFailure(binding) {
+        const last = lastModelEvent(binding);
+        if (last === undefined || last.type !== 'assistant/attempt') return false;
+        return attemptFinishedWithError(last.event);
+      }
+
+      /**
+       * 这一轮是不是刚结束：最后一个模型相关事件是 `turn/end`。
+       *
+       * @param {object} binding - Session binding。
+       * @returns {boolean} 是否刚结束。
+       */
+      function justEnded(binding) {
+        const last = lastModelEvent(binding);
+        return last !== undefined && last.type === 'turn/end';
+      }
+
+      /**
+       * `assistant/attempt` 的 stream 里最后一帧 finish 是不是错误。
+       *
+       * @param {object} event - 持久事件。
+       * @returns {boolean} 是否以 error/aborted 结束。
+       */
+      function attemptFinishedWithError(event) {
+        const stream = event && event.data ? event.data.stream : undefined;
+        if (!Array.isArray(stream)) return false;
+        for (let index = stream.length - 1; index >= 0; index -= 1) {
+          const item = stream[index];
+          if (!item || item.type !== 'chunk') continue;
+          const chunk = item.chunk;
+          if (!chunk || chunk.type !== 'finish') continue;
+          const kind = chunk.reason && chunk.reason.kind;
+          return kind === 'error' || kind === 'aborted';
+        }
+        return false;
+      }
+
+      /**
+       * 读 composer card 的当前高度，算出覆盖层距 card 顶部的偏移。
+       *
+       * 官方按钮贴 card 右下角（距右/下各 8px、34×34）。覆盖层在 `overlayAnchor` 里，
+       * 那个锚点高度是 0（`inset: 0 0 <cardHeight>px`），所以不能用 `bottom` 定位；
+       * 只能读出 card 高度、换算成 `top`。单行输入时是 114；多行/附件会把 card 撑高。
+       *
+       * @returns {number} 覆盖层的 top（px）。
+       */
+      function buttonTopOffset() {
+        try {
+          const card = typeof document === 'undefined' ? null : document.querySelector('[data-composer-card]');
+          const height = card ? card.getBoundingClientRect().height : 0;
+          if (height > 0) return Math.max(0, Math.round(height - BUTTON_INSET - BUTTON_SIZE));
+        } catch {
+          // 读不到就用默认值。
+        }
+        return DEFAULT_CARD_HEIGHT - BUTTON_INSET - BUTTON_SIZE;
+      }
+      // #endregion
+
+      // #region 样式
+      /**
+       * 覆盖层容器：绝对定位到官方按钮的位置。
+       *
+       * 尺寸、圆角、配色都对齐官方 submit 按钮（34×34、正圆、品牌主色），看起来就是
+       * "那个按钮变成了重试"，而不是旁边多了一个控件。
+       *
+       * @param {number} top - 距 card 顶部的偏移。
+       * @returns {object} 内联样式。
+       */
+      function overlayStyle(top) {
+        return {
+          position: 'absolute',
+          right: `${BUTTON_INSET}px`,
+          top: `${top}px`,
+          width: `${BUTTON_SIZE}px`,
+          height: `${BUTTON_SIZE}px`,
+          zIndex: 2,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        };
+      }
+
+      /**
+       * 重试按钮本体。
+       *
+       * 逐条对齐官方 submit 按钮（`dsh-client-ui-conversation` 里的 `*_primary` 规则）：
+       *
+       * ```css
+       * corner-shape: round;                     ← 关键：不写它就不是正圆
+       * background: var(--dsw-alias-button-info-fill);
+       * color: #fff; border: none; border-radius: 999px;
+       * width: 34px; height: 34px; display: grid; place-items: center;
+       * transition: background-color .1s;
+       * :hover:not(:disabled) { background: var(--dsw-alias-button-info-hover); }
+       * :disabled { opacity: .4; cursor: default; }
+       * ```
+       *
+       * 两个容易漏的点（都是用户先看出来的）：
+       *
+       * 1. **颜色**不用 `--dsw-alias-brand-primary`（浅色主题下是深色），官方用的是
+       *    `--dsw-alias-button-info-fill`（蓝 `#4176e6`）。
+       * 2. **`corner-shape: round`**：DSH 全局把角形状设成了 squircle（品牌圆角），
+       *    所以只写 `border-radius: 999px` 会得到"圆角方形"而不是正圆；官方按钮显式
+       *    覆盖成 `round` 才是圆的。内联写 `cornerShape` 之外，样式表里也再写一次
+       *    （`corner-shape` 较新，内联 camelCase 支持因 React 版本而异）。
+       */
+      const BUTTON_STYLE = {
+        width: '100%',
+        height: '100%',
+        padding: 0,
+        margin: 0,
+        boxSizing: 'border-box',
+        display: 'grid',
+        placeItems: 'center',
+        borderRadius: '999px',
+        cornerShape: 'round',
+        border: 'none',
+        background: 'var(--dsw-alias-button-info-fill, #4d6bfe)',
+        color: '#fff',
+        cursor: 'pointer',
+        transition: 'background-color .1s',
+        outlineOffset: '2px'
+      };
+      // #endregion
+
+      // #region 组件
+      /**
+       * 重试图标按钮组件。
+       *
+       * props 来自三处：`sessionId` 由槽位按 Session scope 注入，`t` 来自 locale 绑定，
+       * `useRetryNotice`/`retryNotice` 来自本插件 contribution 的 `inject()`。
+       *
+       * `useRetryNotice` 必须在任何提前 return 之前调用（hooks 顺序不能变），所以先取
+       * 状态再判隐藏。
+       *
+       * **隐藏时也返回一个 `display:none` 的占位**，而不是 null：槽位 renderer 对
+       * "不产出内容"的条目可能直接卸载组件，那样 `subscribe` 会被拆掉、会话事件流
+       * 再也收不到 —— 实测后果是"点过一次重试之后，下一次失败按钮再也不出现"。
+       * 保持挂载才能持续跟踪。
+       *
+       * @param {any} props - 槽位注入的 props。
+       * @returns {any} 覆盖层按钮，或一个不可见的占位。
+       */
+      function RetryButton(props) {
+        const state = props.useRetryNotice((value) => value);
+        if (state === null || state === undefined || state.kind === 'hidden') {
+          return jsx('div', { style: { display: 'none' }, 'data-turn-retry': 'hidden' });
+        }
+
+        const t = props.t;
+        const busy = state.kind === 'busy';
+        const hint = state.kind === 'waiting' && state.mode === 'recoverable' ? t('hint.stopped') : t('hint.failed');
+
+        return jsx('div', {
+          style: overlayStyle(buttonTopOffset()),
+          'data-turn-retry': state.kind,
+          children: jsx('button', {
+            type: 'button',
+            // 配色/圆角/尺寸来自 BUTTON_STYLE；hover 与 disabled 的观感由注入的样式表
+            // 负责（与官方按钮同一条规则），这里不再内联 opacity —— 否则会和 :disabled
+            // 的 `.4` 叠乘，重试中变得过分透明。
+            style: BUTTON_STYLE,
+            'data-dsh-turn-retry-button': '',
+            disabled: busy,
+            title: hint,
+            'aria-label': busy ? t('hint.retrying') : `${t('action.retry')} — ${hint}`,
+            onClick: () => {
+              void props.retryNotice.retry();
+            },
+            children: retryIcon(busy)
+          })
+        });
+      }
+
+      /**
+       * 重试图标：顺时针循环箭头，用 `currentColor` 描边；重试中旋转。
+       *
+       * @param {boolean} busy - 是否正在重试。
+       * @returns {any} SVG 元素。
+       */
+      function retryIcon(busy) {
+        return jsxs('svg', {
+          width: 17,
+          height: 17,
+          viewBox: '0 0 20 20',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.8,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
+          focusable: 'false',
+          style: busy
+            ? { display: 'block', animation: 'dsh-turn-retry-spin 900ms linear infinite' }
+            : { display: 'block' },
+          children: [
+            jsx('path', { d: 'M16.5 10a6.5 6.5 0 1 1-1.9-4.6' }),
+            jsx('path', { d: 'M16.8 3.2v3.4h-3.4' })
+          ]
+        });
+      }
+      // #endregion
+
+      // #region 插件入口
+      /** 浏览器半用到的服务：槽位、词典、Connection RPC、Session binding。 */
+      const inject = ['slots', 'locale', 'connection', 'sessions'];
+
+      /**
+       * 挂载覆盖层。
+       *
+       * 注册包在 `ctx.slots.inject(SLOT_NAME, …)` 里：槽位名属于
+       * `@deepseek-ai/dsh-client-ui-conversation`，浏览器插件之间的加载顺序不保证，
+       * `slots.inject` 等该槽位被声明出来后才回调注册。
+       *
+       * 每个 Session 各有一份 `inject()` 结果（renderer 按 entry × 会话缓存），所以状态
+       * 天然是"每个会话一份"—— 两个会话互不影响。
+       *
+       * @param {any} ctx - 浏览器插件上下文。
+       * @returns {void}
+       */
+      function apply(ctx) {
+        const t = ctx.locale.bind(NS);
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-turn-retry: 词典');
+
+        // 加载标记：控制台里 `document.documentElement.dataset.dshTurnRetry` 就是版本号。
+        ctx.effect(() => {
+          if (typeof document === 'undefined' || document.documentElement === null) return () => {};
+          const root = document.documentElement;
+          const previous = root.dataset.dshTurnRetry;
+          root.dataset.dshTurnRetry = CLIENT_VERSION;
+          return () => {
+            if (previous === undefined) delete root.dataset.dshTurnRetry;
+            else root.dataset.dshTurnRetry = previous;
+          };
+        }, 'dsh-turn-retry: load marker');
+
+        // 样式表：一条旋转 keyframes + 与官方按钮同源的两条交互规则。
+        //
+        // 用文档级样式表而不是内联样式，是因为 `:hover` / `:disabled` 无法用内联 style
+        // 表达。选择器只命中本插件自己的 `[data-dsh-turn-retry-button]`，不碰任何别人的
+        // DOM 或类名，插件卸载时整条规则随之移除。
+        ctx.effect(() => {
+          if (typeof document === 'undefined') return () => {};
+          const style = document.createElement('style');
+          style.setAttribute('data-dsh-turn-retry', '');
+          style.textContent = [
+            '@keyframes dsh-turn-retry-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}',
+            // 正圆的关键：DSH 全局把 corner-shape 设成 squircle，只写 border-radius 会
+            // 得到"圆角方形"。内联 style 里也写了一份 cornerShape，这里再兜一次。
+            '[data-dsh-turn-retry-button]{corner-shape:round;border-radius:999px}',
+            // 与官方 submit 按钮一致：hover 换 hover 色（不是变深/变透明）。
+            '[data-dsh-turn-retry-button]:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
+            // 与官方一致：禁用时整颗淡化到 .4。
+            '[data-dsh-turn-retry-button]:disabled{opacity:.4;cursor:default}'
+          ].join('');
+          document.head.appendChild(style);
+          return () => {
+            style.remove();
+          };
+        }, 'dsh-turn-retry: styles');
+
+        ctx.slots.inject(SLOT_NAME, () =>
+          ctx.slots.register(
+            {
+              name: SLOT_NAME,
+              id: SLOT_ID,
+              order: SLOT_ORDER,
+              locale: NS,
+              inject: (sessionId) => {
+                const notice = createRetryNotice(ctx, String(sessionId ?? ''));
+                return {
+                  hooks: { retryNotice: notice },
+                  retryNotice: notice
+                };
+              }
+            },
+            RetryButton
+          )
+        );
+      }
+      // #endregion
+
+      return { apply, inject, RetryButton, lastModelEventIsFailure, justEnded, attemptFinishedWithError };
+    })();
+    // #endregion
+
     // #region 插件入口
     /**
      * 浏览器半用到的服务：槽位（挂按钮）、词典、以及到 Host 的 RPC 通道。
@@ -768,7 +1501,7 @@ window.__ModuleLoader__.load({
      * `connection` 是 RPC carrier（与其他调用宿主服务的 UI 插件用法一致）；不带它时
      * 分享按钮会一直停在「操作失败」，所以这里是硬依赖。
      */
-    const inject = ['slots', 'locale', 'connection'];
+    const inject = ['slots', 'locale', 'connection', 'sessions'];
 
     /**
      * 挂载两个按钮，并把分享对话框的全部状态与动作绑到各自的 Session。
@@ -995,11 +1728,21 @@ window.__ModuleLoader__.load({
           SessionShareButton
         )
       );
+
+      // 第三个组件：composer 的失败重试覆盖层。它自己注册槽位、词典、样式表与加载
+      // 标记，所以这里只需要把同一个 ctx 交过去（IIFE 内是它原来的 apply）。
+      retryHalf.apply(ctx);
     }
     // #endregion
 
     exports.apply = apply;
     exports.inject = inject;
+    // 纯函数与组件导出：离线冒烟（没有浏览器、没有真实 renderer）靠它们检查合并后的
+    // bundle 形状；不影响运行时。
+    exports.RetryButton = retryHalf.RetryButton;
+    exports.lastModelEventIsFailure = retryHalf.lastModelEventIsFailure;
+    exports.justEnded = retryHalf.justEnded;
+    exports.attemptFinishedWithError = retryHalf.attemptFinishedWithError;
     return module.exports;
   }
 });

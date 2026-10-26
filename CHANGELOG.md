@@ -3,6 +3,34 @@
 本插件的改动都记在这里；版本号遵循 `.` 分段语义（大版本 = 结构性/破坏性，中版本 = 新能力，
 小版本 = 修复与文档）。
 
+## 1.0.0 — 2026-10-26
+
+**合并插件**：「失败重试」（原 `dsh-turn-retry`）并入「会话增强」，一个插件三个组件。
+
+### 变更（结构性）
+
+- **新增组件「失败重试」**：模型调用失败（自动重试耗尽）或用户点停止后，composer 右下角
+  官方按钮变成圆形「重试」图标；点击后失败路径在**同一 turn/step 原地重新调用模型**
+  （不追加用户消息），停止路径用 `agent.followup()` 驱动新一轮。
+  - Host 半：`lib/retry/{host,gate,recovery,rpc,diagnostics}.mjs`；
+  - 浏览器半：`conversation.input.overlay` 槽位上的 34×34 覆盖层（IIFE 隔离作用域并入
+    `client.js`）；
+  - 闸门语义保留：先 `await next()` 问下游自动重试、放弃时不调 `next()`、120 秒等待上限、
+    5 秒孤儿保护、非 root Agent / 无活跃客户端 / 已 abort 都不挂起；
+  - 重试 RPC 通道保留旧名 `/dsh-turn-retry`（仅插件内部，避免无谓回归）。
+- **`dsh-turn-retry` 插件已删除**：本地目录、profile 行与 GitHub 仓库都不再存在。
+  升级本插件前请先卸载旧的 `dsh-turn-retry`（`dsh plugin remove dsh-turn-retry`），
+  否则会出现两个重试按钮。
+- 插件描述/显示名/locale 更新为三组件（会话 ID、会话分享、失败重试）。
+
+### 已验证
+
+- 离线单测 **95/95**：原 47（会话/分享）+ 并入的 48（闸门状态机含孤儿保护、恢复记录 TTL、
+  RPC 信封与两条重试路径、`installTurnRetry` mock-ctx 集成）。
+- headless 真实 Loader：会话查询/分享失败降级仍通过；重试闸门在无活跃客户端时 fail-closed。
+- UI 沙箱真实浏览器：标题栏分享/复制按钮 + 分享对话框全流程仍通过；重试覆盖层在无失败态时
+  为 `[data-turn-retry="hidden"]` 隐藏占位（证明第三个组件注册成功），composer 正常。
+
 ## 0.2.0 — 2026-10-26
 
 会话增强。

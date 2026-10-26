@@ -1,21 +1,26 @@
 # 会话增强 · dsh-session-id
 
-复制会话 ID、按 ID 查看会话与子代理，并把会话分享成**免登录只读链接**。
+一个插件三件事：**复制会话 ID**、**会话分享**、**失败重试**（外加让 Agent 按 id 查会话与子代理的工具）。
 
 > 开源（MIT）。仓库地址：<https://github.com/lldwb/dsh-session-id>
 >
 > 插件显示名是**会话增强**；包名与仓库名保留 `dsh-session-id`（沿用已有安装路径与链接，
 > 不改名不会让 `dsh plugin add`、`link:` 依赖或外部引用失效）。
+>
+> **原「失败重试」插件（`dsh-turn-retry`）已于 1.0.0 并入本插件**：它的目录、profile 行与
+> GitHub 仓库都已删除，重试能力现在由本插件的 `lib/retry/**` 与 client.js 的重试按钮提供。
+> 升级时请先卸载旧的 `dsh-turn-retry`，否则会出现两个重试按钮。
 
-## 三个能力
+## 三个组件
 
-| 能力 | 在哪 | 提供什么 |
+| 组件 | 在哪 | 提供什么 |
 |---|---|---|
-| 复制会话 ID | 浏览器半 | 会话标题栏一个复制按钮：把当前会话 id 写进剪贴板并弹 toast |
-| 按 ID 查会话 | Host 半工具 `session_lookup` | 标题、工作区、预设、父级链、**全部子代理**、最近消息 |
+| 会话 ID | 浏览器半 | 会话标题栏一个复制按钮：把当前会话 id 写进剪贴板并弹 toast |
 | 会话分享 | 浏览器半 + Host 半 | 生成免登录只读链接 `/share/<token>`：可复制、打开、下载单文件 HTML、停止分享 |
+| 失败重试 | 浏览器半 + Host 半 | 模型调用失败（自动重试耗尽）或用户点停止后，composer 右下角按钮变成「重试」，点一下直接重新调用模型 |
+| （配套工具） | Host 半 | `session_lookup` 按 id 查会话与全部子代理；`session_share` 让 Agent 在用户明确要求时创建/撤销分享 |
 
-三部分互相独立：只装 Host 半也能查会话，只装浏览器半也能复制 id。
+三部分互相独立：只装 Host 半也能查会话，只装浏览器半也能复制 id / 分享 / 重试。
 
 ## 安装
 
@@ -32,7 +37,7 @@ dsh plugin add .
 
 ## 用法
 
-### 复制会话 ID
+### 会话 ID
 
 会话标题栏右侧、在「⋯」之前多一个复制图标按钮：
 
@@ -79,7 +84,7 @@ inheritedEventCount 种子会话从父会话继承的事件数
 Agent 也能分享：用户明确要求时，工具 `session_share` 支持
 `create` / `status` / `revoke` / `list` 四个动作（描述里写明"只有用户明确要求时才调用"）。
 
-#### 支持到什么程度（重要）
+#### 分享支持到什么程度（重要）
 
 | 场景 | 是否支持 |
 |---|---|
@@ -92,15 +97,43 @@ Agent 也能分享：用户明确要求时，工具 `session_share` 支持
 链接里的根地址来自 `webApp.getAdvertisedUrl()`（部署配置了对外地址时）或本机监听
 origin；两者都拿不到时创建会明确报错，而不是给一个打不开的链接。
 
+### 失败重试
+
+没有额外的提示条、弹窗或新按钮。**官方那个发送/停止按钮的位置**（composer 卡片右下角）
+在下列时刻变成一个圆形「重试」图标（循环箭头）：
+
+| 触发 | 图标提示 | 点击后 |
+|---|---|---|
+| 模型调用失败（自动重试耗尽） | 「模型调用失败 —— 点击重试」 | `agent-loop` 在**同一 turn / step 重新调用模型**，不产生任何用户消息 |
+| 你点了停止 | 「已停止 —— 点击重试」 | Host 用 `agent.followup()` 驱动一次新的 turn（见下方「已知取舍」） |
+
+- 覆盖层是 34×34 正圆、品牌主色，尺寸与位置对齐官方按钮；card 被多行输入/附件撑高时按实际高度重新贴合。
+- 点击后图标旋转、按钮置灰；重试会再跑一整轮，期间按钮消失。
+- 没有可重试状态时覆盖层不可见，官方按钮原样可用。
+- **等待上限 120 秒**：失败挂起后没人点就自动放行，按原有语义让这一轮以错误结束。
+- **孤儿保护**：开闸后 5 秒内若没有任何浏览器半来查 `pending`（典型：插件刚装、页面还没刷新），立刻按原生语义结束，不会白等两分钟。
+- 状态**按会话各一份**，两个会话互不影响；只在「看起来可能可重试」时才向 Host 查一次，其余时候零请求。
+
+**已知取舍**：模型失败后的重试是**原地重发**，历史不变；但用户点「停止」之后这一轮已经
+结束，物理上无法原地重试，只能由 Host 用 `agent.followup()` 排一条中性消息
+（「上一轮被用户中断。请从中断处继续完成…」）驱动新的一轮 —— 这条消息会进入会话历史，
+是 DSH 当前架构下无法回避的代价。
+
 ## 设计说明
 
-### 浏览器半挂在 `conversation.session.header.utilities`
+### 浏览器半的槽位
 
-这个槽位由 `@deepseek-ai/dsh-client-ui-conversation` 声明，是会话标题栏右侧那组小按钮
-（随附的 Session 导出插件就在同一槽位注册「⋯」）。`list` 槽位按 `order` 升序渲染：
-分享按钮 `order: -11`、复制按钮 `order: -10`，因此稳定落在「⋯」左边。
+| 组件 | 槽位 | order |
+|---|---|---|
+| 分享 | `conversation.session.header.utilities`（标题栏右侧小按钮） | -11 |
+| 复制 ID | 同上 | -10 |
+| 重试 | `conversation.input.overlay`（composer card 内的绝对定位锚点） | 0 |
 
-槽位注册包在 `ctx.slots.inject(...)` 里：槽位名属于另一个客户端包，浏览器插件加载顺序
+标题栏槽位由 `@deepseek-ai/dsh-client-ui-conversation` 声明，`list` 槽位按 `order` 升序
+渲染，所以分享/复制稳定落在「⋯」左边。重试按钮放 overlay 槽位是为了**盖住**官方 submit
+按钮（`conversation.input.right` 只能"旁边多一个"）。
+
+两处注册都包在 `ctx.slots.inject(...)` 里：槽位名属于另一个客户端包，浏览器插件加载顺序
 不保证；等槽位声明出来再注册，避免静默不显示。
 
 ### 会话 id 从哪来
@@ -134,6 +167,34 @@ Host 半的 `execute(args, exec)` 则从 `exec.agent.session.id` 取调用方会
 创建/查询/撤销这些**有副作用**的接口则走认证通道：`connection.admit(req)` 校验后才会
 执行，浏览器半用 `ctx.connection.rpc.call('/dsh-session-id', …)` 调用。
 
+### 重试怎么做到"不追加消息"
+
+`@deepseek-ai/dsh-agent-loop` 在最终失败后会走一个 waterfall：
+
+```js
+const action = await this.dispatch.waterfall('agent/request-error', payload, () => Promise.resolve(void 0));
+if (action?.kind !== 'retry') throw new LlmError(...);
+continue;   // ← 回到同一 turn/step 的模型请求
+```
+
+监听器返回 `{ kind: 'retry' }`，loop 就在原地重新 dispatch 模型调用。因为用户点击是异步的，
+监听器返回一个**尚未 resolve 的 Promise**把这次失败挂住，点击经 RPC 送回后再放行。
+
+两条关键语义（实测踩过）：
+
+1. **先 `await next()` 问下游**：`agent/request-error` 是每次 attempt 失败都触发的 waterfall，
+   DSH 自带自动重试挂在它下游。下游说 `{ kind: 'retry' }` 就放行（自动重试期间不打扰用户）；
+   只有下游放弃时这次才是"最终失败"，才挂起等用户。
+2. **放弃时不能调用 `next()`**：那等于把决定交回自动重试策略，它会继续重试；直接返回
+   `undefined` 才是"让这一轮失败"。
+
+另外只拦"有人能看见"的失败：非 root Agent（子代理）不拦、没有活跃浏览器客户端不拦
+（`typertGateway.hasLiveClient()`，探测服务缺失时 fail-closed 不挂起）、`signal` 已 abort 不拦。
+闸门有 120 秒上限、孤儿保护 5 秒、插件卸载时全部放行，不会把 Agent 永久卡住。
+
+重试半的浏览器动作通道保留旧通道名 `/dsh-turn-retry`（合并前是独立插件，改名只增加回归
+风险），Host 侧同样用 `webServer` prefix 路由 + `connection.admit` 认证。
+
 ### 存储
 
 `<DSH_HOME>/dsh-session-id/shares.json`，只存 `{ sessionId, createdAt, includeDescendants }`。
@@ -144,28 +205,33 @@ Host 半的 `execute(args, exec)` 则从 `exec.agent.session.id` 取调用方会
 
 | 层 | 内容 | 结果 |
 |---|---|---|
-| 离线单测 | `node --test`：严格 JSON-Schema 子集、required 覆盖、返回值按自身 schema 自校验、消息过滤、血缘拍平、分享存储（幂等/撤销/持久化/损坏文件/BOM）、HTML 转义（XSS）、分享视图、`session_share` 全流程 | 47/47 通过 |
-| headless 沙箱 | 真实 Loader：`session_lookup`（无参数 / 不存在 id）；真实 `subagent` 派生后用工具发现并反查 `role=subagent`、`parentSessionId`；`session_share` 在无 web server 的部署里返回结构化失败 | 通过 |
-| web 沙箱（真实 HTTP） | 端到端：RPC `share.create` → 公开页 `GET /share/<token>` **200 / 4.5 KB HTML**（含标题、用户/助手消息、只读徽标）→ `?download=1` 返回 `attachment; filename="dsh-session-share-….html"` → 未知 token **404** → `POST` **405** → `share.revoke` 后再访问 **404**；响应头带严格 CSP | 通过 |
-| UI 沙箱 | 真实浏览器：分享按钮可见（在复制按钮左侧）；点击打开「分享会话」对话框；创建后对话框显示真实链接与「复制链接 / 打开链接 / 下载 HTML / 停止分享」；toast「分享链接已创建」；两段式停止后 toast「已停止分享」并回到未分享态；分享期间 `fetch(url)` 200，撤销后同一 url 404 | 通过 |
+| 离线单测 | `node --test`：严格 JSON-Schema 子集、required 覆盖、返回值自校验、消息过滤、血缘拍平、分享存储（幂等/撤销/持久化/损坏文件/BOM）、HTML 转义、分享视图、`session_share` 全流程；**并入的重试半 48 个用例**（闸门状态机含孤儿保护、恢复记录 TTL、RPC 信封与两条重试路径、mock-ctx 集成） | **95/95 通过** |
+| headless 沙箱 | 真实 Loader：`session_lookup`（无参数 / 不存在 id）；真实 `subagent` 派生后反查 `role=subagent`、`parentSessionId`；`session_share` 在无 web server 的部署里返回结构化失败；重试闸门在无活跃客户端时 fail-closed（不挂起） | 通过 |
+| web 沙箱（真实 HTTP） | RPC `share.create` → 公开页 200（约 4.5 KB，含消息与只读徽标）→ `?download=1` 返回 `attachment` → 未知 token 404 → `POST` 405 → 撤销后再访问 404；CSP 头存在 | 通过 |
+| UI 沙箱 | 真实浏览器：标题栏分享/复制按钮可见；分享对话框创建/复制/停止全流程；重试覆盖层在无失败态时是隐藏占位（注册成功）、composer 区域正常 | 通过 |
 
-> 回归里抓到并修掉两个真 bug：一是 `share.create` 拿不到分享地址时先落盘再报错，留下
-> 打不开的孤儿记录；二是 `shares.json` 带 UTF-8 BOM 时被当成损坏文件，导致分享功能
-> 整个锁死。
+> 0.2.0 回归里抓到并修掉两个真 bug：`share.create` 拿不到地址时先落盘留下孤儿记录；
+> `shares.json` 带 UTF-8 BOM 时被当成损坏文件导致分享功能锁死。
 
 ## 开发笔记
 
 ```
-index.js          插件入口：分享存储、RPC、公开路由、工具注册
-lib/service.mjs   会话视图折叠（血缘 / 标题 / 消息 / 失败同一形状），可离线单测
-lib/tools.mjs     session_lookup + session_share 的参数与输出 schema（手写严格子集）
-lib/shareview.mjs 分享页的数据装载（复用 service 的消息折叠）
-lib/render.mjs    自包含只读 HTML（转义、CSP、深浅色、打印友好）
-lib/shares.mjs    shares.json 存储（原子写、容忍 BOM、损坏不覆盖）
-lib/rpc.mjs       认证的创建/查询/撤销通道
-lib/public.mjs    免登录的 /share/<token> 只读路由
-client.js         浏览器半：手写 ModuleLoader bundle、复制/分享按钮、对话框、toast、i18n
-cordis.patch.yml  根作用域 insert 一行（不按 preset 挂载）
+index.js            插件入口：分享存储、RPC、公开路由、工具注册、重试半接线
+lib/service.mjs     会话视图折叠（血缘 / 标题 / 消息 / 失败同一形状），可离线单测
+lib/tools.mjs       session_lookup + session_share 的参数与输出 schema（手写严格子集）
+lib/shareview.mjs   分享页的数据装载（复用 service 的消息折叠）
+lib/render.mjs      自包含只读 HTML（转义、CSP、深浅色、打印友好）
+lib/shares.mjs      shares.json 存储（原子写、容忍 BOM、损坏不覆盖）
+lib/rpc.mjs         分享的认证 RPC 通道（/dsh-session-id）
+lib/public.mjs      免登录的 /share/<token> 只读路由
+lib/retry/host.mjs  重试半 Host 侧：agent/request-error 闸门、停止记录、RPC 接线
+lib/retry/gate.mjs  重试等待闸门（按会话去重、等待上限、孤儿保护；纯 JS）
+lib/retry/recovery.mjs  「停止后可重试」记录（TTL）
+lib/retry/rpc.mjs   重试的认证 RPC 通道（/dsh-turn-retry，兼容旧名）
+lib/retry/diagnostics.mjs 重试诊断记录（diag 端点）
+client.js           浏览器半：三个组件 + 对话框 + toast + i18n（重试半用 IIFE 隔离作用域）
+cordis.patch.yml    根作用域 insert 一行（不按 preset 挂载）
+test/               分享/会话视图测试；test/retry/ 是并入的重试半测试
 ```
 
 - **严格 schema 是最大的坑**：第三方插件不能 `import defineTool`，参数与返回值都要手写
@@ -175,9 +241,11 @@ cordis.patch.yml  根作用域 insert 一行（不按 preset 挂载）
 - **浏览器半只能 require 两个说明符**：`react/jsx-runtime` 与
   `@deepseek-ai/dsh-client-ui-primitives`；没有 `useState` 时通过槽位 `hooks` 注入自己的
   快照源（`{ getSnapshot, subscribe }`），renderer 会把它绑成组件 props 上的 `useXxx`。
+- **两个 bundle 合并时用 IIFE 隔离**：重试半与分享/复制半的顶层标识符大量重名
+  （`NS` / `en` / `zh` / `SLOT_NAME` / `BUTTON_STYLE` …），把重试半整体包进
+  `const retryHalf = (() => { … })();` 比逐个改名安全得多，也保留了它原有的注释与结构。
 - **改完必须回归**：`node --test` 看不见"插件没加载 / 槽位没声明 / 返回值过不了校验 / 路由
-  被回退吃掉"，得在真实 Loader 与真实浏览器里各跑一遍。分享功能的两个 bug 都是真实
-  HTTP/浏览器回归里才暴露的。
+  被回退吃掉"，得在真实 Loader 与真实浏览器里各跑一遍。
 
 ## License
 

@@ -1,19 +1,21 @@
 /**
- * `dsh-session-id`（显示名「会话增强」）—— 会话 ID 与会话分享的双面插件。
+ * `dsh-session-id`（显示名「会话增强」）—— 会话 ID、会话分享与失败重试的三合一插件。
  *
- * ## 三个能力
+ * ## 三个组件
  *
- * 1. **复制会话 ID**（浏览器半）：会话标题栏一个复制按钮，用户拿到 id 后可以贴给
- *    任何 Agent。
- * 2. **按 ID 查会话**（Host 半 `session_lookup`）：标题、父级链、全部子代理、最近
- *    消息。
- * 3. **会话分享**（浏览器半 + Host 半）：生成免登录只读链接 `/share/<token>`，
- *    可复制/打开/下载单文件 HTML/停止分享；页面每次请求现读日志，撤销即失效。
+ * 1. **会话 ID**（浏览器半）：会话标题栏一个复制按钮，用户拿到 id 后可以贴给任何
+ *    Agent；配合 Host 半 `session_lookup` 按 id 查标题、父级链、子代理与最近消息。
+ * 2. **会话分享**（浏览器半 + Host 半）：标题栏分享按钮生成免登录只读链接
+ *    `/share/<token>`，可复制/打开/下载单文件 HTML/停止分享；页面每次请求现读日志，
+ *    撤销即失效。工具 `session_share` 让 Agent 在用户明确要求时也能分享。
+ * 3. **重试按钮**（浏览器半 + Host 半）：模型调用失败（自动重试耗尽）或用户点了停止
+ *    之后，composer 右下角那个按钮变成圆形「重试」图标 —— 点一下直接重新调用模型，
+ *    不追加用户消息、不开新 turn（`lib/retry/`，原 `dsh-turn-retry` 插件并入）。
  *
  * ## 挂载方式
  *
  * `cordis.patch.yml` 在根作用域 insert 一行，**不按 preset 挂载**：复制 id、查会话、
- * 分享会话都是 Web 外壳与任何模式的通用能力。
+ * 分享会话、失败重试都是 Web 外壳与任何模式的通用能力。
  *
  * ## 依赖的分层
  *
@@ -21,8 +23,9 @@
  * |---|---|---|
  * | `tools` | 注册工具 | 硬依赖（模块加载失败） |
  * | `sessionQuery` | 查会话/渲染分享页 | 工具返回说明，分享页 404 |
- * | `webServer` | 公开 `/share` 路由、RPC 通道 | 分享功能整体不可用，复制/查询不受影响 |
+ * | `webServer` | 公开 `/share` 路由、两条 RPC 通道 | 分享/重试的界面动作不可用，查询不受影响 |
  * | `sessions` | 分享前 flush 实时日志 | 少最后几条，不报错 |
+ * | `agents` / `typertGateway` | 重试闸门的"有人能点吗"探测 | fail-closed：不挂起，按原生语义结束 |
  *
  * ## 存储
  *
@@ -36,6 +39,7 @@ import { buildTools } from './lib/tools.mjs';
 import { createShareStore, resolveDshHome, sharesFilePath } from './lib/shares.mjs';
 import { mountShareRpc } from './lib/rpc.mjs';
 import { mountShareRoutes } from './lib/public.mjs';
+import { installTurnRetry } from './lib/retry/host.mjs';
 
 /** Cordis 插件名：同时是 Loader 行 id 与浏览器半 locale 命名空间。 */
 export const name = 'dsh-session-id';
@@ -43,15 +47,16 @@ export const name = 'dsh-session-id';
 /**
  * `tools` 是硬依赖：注册工具是 Host 半存在的理由。
  *
- * 其余服务（sessionQuery / webServer / sessions）都用 `ctx.get()` 软取，缺了要能
- * 降级——例如只挂 Host 半的部署照样能查会话，只是分享不可用。
+ * 其余服务（sessionQuery / webServer / sessions / agents / typertGateway）都用
+ * `ctx.get()` 软取，缺了要能降级——例如只挂 Host 半的部署照样能查会话，只是分享
+ * 与重试按钮不可用。
  */
 export const inject = ['tools'];
 
 /**
  * 构建戳。行为有可观察变化时递增，便于从日志判断"当前进程跑的是哪版代码"。
  */
-export const BUILD = '2026-10-26.1';
+export const BUILD = '2026-10-26.2';
 
 /**
  * 安全调用一个可能抛错的值函数。
@@ -113,6 +118,9 @@ export function apply(ctx) {
 
   mountShareRpc(ctx, { store, sessionQuery, sessions, originOf });
   mountShareRoutes(ctx, { store, sessionQuery, sessions, logger: ctx.logger });
+
+  // 重试半：`agent/request-error` 闸门 + 两条会话事件监听 + RPC 通道 `/dsh-turn-retry`。
+  installTurnRetry(ctx);
 
   ctx.logger?.info?.(`dsh-session-id: ready (${definitions.length} tools, build=${BUILD})`);
 }
