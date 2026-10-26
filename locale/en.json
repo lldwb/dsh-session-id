@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Session ID",
-    "description": "Copy the current session ID, and let the agent look up a session and its subagents by ID."
+    "title": "Session Enhance",
+    "description": "Copy the session ID, look up a session and its subagents by ID, and share a session as a read-only link that needs no sign-in."
   }
 }

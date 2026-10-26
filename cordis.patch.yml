@@ -1,11 +1,14 @@
-# dsh-session-id —— 全局挂载：任何会话都能复制自己的 ID，任何 Agent 都能按 ID 查会话。
+# dsh-session-id（显示名：会话增强）—— 全局挂载。
 #
 # 这里**故意**不按 preset 挂载：
-# - 浏览器半是会话标题栏的一个按钮，属于 Web 外壳的通用能力，不属于某个模式；
-# - Host 半的工具要在标准模式里也能用（用户复制了 ID 去问任何会话）。
+# - 浏览器半是会话标题栏的两个按钮（复制 ID / 分享会话），属于 Web 外壳的通用能力；
+# - Host 半的工具（session_lookup / session_share）与 /share/<token> 公开路由要在任何
+#   模式、任何会话里都能用。
 #
 # 本行 id 同时是浏览器半的 locale 命名空间与 `ctx.slots.register` 的 id 前缀，
-# 但**不是**设置命名空间：本插件没有设置页，也没有 Config 字段。
+# 也是认证 RPC 通道 `/dsh-session-id` 的路径；但**不是**设置命名空间：本插件没有
+# 设置页，也没有 Config 字段。改 id 要同步改 index.js 的 `name`、client.js 的
+# `SETTINGS_NS` 类常量与 lib/rpc.mjs 的 `RPC_CHANNEL`。
 - insert:
     - id: dsh-session-id
       name: 'dsh-session-id'

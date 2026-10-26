@@ -1,23 +1,21 @@
-# dsh-session-id
+# 会话增强 · dsh-session-id
 
-复制当前会话的 ID，并让 Agent 按 ID 查找任意会话及其子代理。
+复制会话 ID、按 ID 查看会话与子代理，并把会话分享成**免登录只读链接**。
 
 > 开源（MIT）。仓库地址：<https://github.com/lldwb/dsh-session-id>
+>
+> 插件显示名是**会话增强**；包名与仓库名保留 `dsh-session-id`（沿用已有安装路径与链接，
+> 不改名不会让 `dsh plugin add`、`link:` 依赖或外部引用失效）。
 
-## 解决什么
+## 三个能力
 
-DSH Web GUI 的会话标题栏右上角只有一个「⋯」菜单（下载 Session 日志 / 反馈）。当你
-想把某个会话交给 Agent 处理时——"看看这个会话在聊什么""那个会话派生了哪些子代理"
-——却没有地方能一键拿到会话 id，Agent 拿到 id 后也没有工具能定位那个会话。
+| 能力 | 在哪 | 提供什么 |
+|---|---|---|
+| 复制会话 ID | 浏览器半 | 会话标题栏一个复制按钮：把当前会话 id 写进剪贴板并弹 toast |
+| 按 ID 查会话 | Host 半工具 `session_lookup` | 标题、工作区、预设、父级链、**全部子代理**、最近消息 |
+| 会话分享 | 浏览器半 + Host 半 | 生成免登录只读链接 `/share/<token>`：可复制、打开、下载单文件 HTML、停止分享 |
 
-本插件补上这两半：
-
-| 半 | 提供什么 |
-|---|---|
-| 浏览器半 | 会话标题栏「⋯」左边多一个**复制会话 ID**按钮，点击把当前会话 id 写进剪贴板并弹 toast |
-| Host 半 | 新工具 **`session_lookup`**：按会话 id 返回标题、工作区、预设、父级链、**全部子代理**与最近消息 |
-
-两者可以独立工作：不装浏览器半，工具照样能用在别的部署；不装 Host 半，按钮照样能复制 id。
+三部分互相独立：只装 Host 半也能查会话，只装浏览器半也能复制 id。
 
 ## 安装
 
@@ -30,18 +28,20 @@ dsh plugin add .
 
 也可以直接把本地目录交给 `dsh plugin add <插件目录>`。
 
-零 npm 依赖、零配置、无设置页：安装后刷新页面即可看到按钮，新会话里即可调用工具。
+零 npm 依赖、零配置、无设置页。装好后刷新页面即可看到按钮；新会话里即可调用工具。
 
 ## 用法
 
 ### 复制会话 ID
 
-会话标题栏右侧，在「⋯」之前多一个复制图标按钮：
+会话标题栏右侧、在「⋯」之前多一个复制图标按钮：
 
 - 点击 → 剪贴板里就是当前会话 id，顶部弹 toast「会话 ID 已复制」；
 - 鼠标悬停 → `title` 显示完整 id，用来确认"复制的是哪一个"；
 - `navigator.clipboard` 被拒（非安全上下文 / 权限关闭）时自动降级到
   `document.execCommand('copy')`；两条都失败才提示失败，不会静默无反应。
+
+拿到 id 后可以直接贴进任何会话问 Agent，例如"用 session_lookup 看看 `<id>`，它有哪些子代理？"
 
 ### `session_lookup`
 
@@ -61,23 +61,44 @@ messages           最近 N 条人对人消息（user / assistant / 压缩摘要
 inheritedEventCount 种子会话从父会话继承的事件数
 ```
 
-典型对话：
-
-> **你**：点复制按钮拿到某个会话的 id，贴进另一个会话：
-> "用 session_lookup 看看 `<id>` 这个会话，它有哪些子代理？"
->
-> **Agent**：返回会话标题、工作区、1 个直接子代理（depth 1）与最近消息；再按子代理的
-> id 调一次就能看它自己的内容。
-
 只读：不创建、不修改、不删除任何会话。
+
+### 会话分享
+
+会话标题栏的**分享按钮**（复制按钮左侧）打开「分享会话」对话框：
+
+- 想分享就点「创建分享链接」→ 得到一个 `http://<host>:<port>/share/<token>` 链接；
+- 链接可以「复制」、在浏览器里「打开」、或「下载 HTML」（`?download=1`，存成单文件，
+  发给别人直接双击就能看）；
+- 「停止分享」两段式确认后立即失效（再访问 404）。
+
+分享页是**只读快照**：标题、创建时间、消息（用户 / 助手 / 压缩摘要）、子代理列表，
+不依赖 DSH、不需要登录、不带脚本。它**不展示**会话 id、工作目录、token，也不展示工具
+调用参数与结果。
+
+Agent 也能分享：用户明确要求时，工具 `session_share` 支持
+`create` / `status` / `revoke` / `list` 四个动作（描述里写明"只有用户明确要求时才调用"）。
+
+#### 支持到什么程度（重要）
+
+| 场景 | 是否支持 |
+|---|---|
+| 本机浏览器打开分享链接 | ✅ 开箱即用 |
+| 局域网其它机器打开 | ✅ 需要把 DSH web 绑到局域网地址：`dsh web --host <局域网IP>`（或部署时配置） |
+| 公网分享链接（像 DeepSeek 网页版那样发出去就能看） | ⚠️ 取决于部署：需要反代 / 内网穿透 / 公网地址 + `--public-url`；DSH 本身默认只监听 `127.0.0.1` |
+| 完全离线分享 | ✅ 用「下载 HTML」把单文件发出去 |
+| 口令保护 / 有效期 / 访问统计 | ❌ 未实现（token 本身即凭据，可随时撤销） |
+
+链接里的根地址来自 `webApp.getAdvertisedUrl()`（部署配置了对外地址时）或本机监听
+origin；两者都拿不到时创建会明确报错，而不是给一个打不开的链接。
 
 ## 设计说明
 
-### 为什么挂在 `conversation.session.header.utilities`
+### 浏览器半挂在 `conversation.session.header.utilities`
 
 这个槽位由 `@deepseek-ai/dsh-client-ui-conversation` 声明，是会话标题栏右侧那组小按钮
-（随附的 Session 导出插件就在同一槽位注册「⋯」）。`list` 槽位按 `order` 升序渲染，
-本插件取 `order: -10`，稳定落在「⋯」左边。
+（随附的 Session 导出插件就在同一槽位注册「⋯」）。`list` 槽位按 `order` 升序渲染：
+分享按钮 `order: -11`、复制按钮 `order: -10`，因此稳定落在「⋯」左边。
 
 槽位注册包在 `ctx.slots.inject(...)` 里：槽位名属于另一个客户端包，浏览器插件加载顺序
 不保证；等槽位声明出来再注册，避免静默不显示。
@@ -98,36 +119,52 @@ Host 半的 `execute(args, exec)` 则从 `exec.agent.session.id` 取调用方会
 
 - `system/message`、`developer/message`：Agent 框架指令（实测一条 system 消息 2700+ 字符），
   说明"Agent 被要求怎么工作"，不是"会话在聊什么"；
-- `tool/result`：工具输出本身，概览里复述没有价值；
+- `tool/result`：工具输出本身，概览/分享页里复述没有价值；
 - 每轮重新注入的 `Current runtime context.`、`<system-reminder>` 虽以 user 角色落盘，
   同样按前缀过滤——实测 4 条消息里 3 条是这类噪音。
 
-结果：一次查询的消息开销从"几乎全是噪音"降到"大约是真正的人话"（默认 10 条 × 单条 800 字符上限）。
+### 分享为什么是"公开路由 + 随机 token"
 
-### 边界与安全
+`connection` 的路由面向已认证的浏览器会话，而分享链接要能被**任何知道链接的人**打开
+（DeepSeek 网页版的会话分享也是这个语义）。所以分享页注册在 `dsh-host-webserver` 的
+普通 HTTP 路由上（它不认识 harness 认证），安全边界完全落在 token：24 字节
+（192 bit）随机、不可枚举、可撤销、每次请求现读日志（撤销即失效，也不在磁盘上多存一份
+会话内容）。
 
-- **跨工作区不阻断，但可见**：目标会话的 `workspace` 与"是否当前会话"都会出现在返回里。
-  会话 id 由用户主动复制并交给 Agent，视为用户的明确授权；本机单用户场景下这比
-  "cwd 字符串相等才允许"更符合实际用途。部署若需要更严格策略，可在 Host 半的
-  `lookupSession` 前加一层 `filterSessions` 授权（参考 `dsh-tool-session-query` 的做法）。
-- **`sessionQuery` 是软依赖**：部署没挂查询服务时工具返回一条说明，插件本身照常加载。
-- **Host 半只读**：所有服务调用都是查询接口。
+创建/查询/撤销这些**有副作用**的接口则走认证通道：`connection.admit(req)` 校验后才会
+执行，浏览器半用 `ctx.connection.rpc.call('/dsh-session-id', …)` 调用。
+
+### 存储
+
+`<DSH_HOME>/dsh-session-id/shares.json`，只存 `{ sessionId, createdAt, includeDescendants }`。
+原子写（临时文件 + rename）。文件损坏时**拒绝写入并报错**而不是覆盖（避免把用户已有的
+分享记录清空）；读取时容忍 UTF-8 BOM（Windows 编辑器常见）。
 
 ## 验证记录
 
 | 层 | 内容 | 结果 |
 |---|---|---|
-| 离线单测 | `node --test`：严格 JSON-Schema 子集、required 覆盖、返回值按自身 schema 校验、消息过滤、血缘拍平、失败分支 | 28/28 通过 |
-| headless 沙箱 | 真实 Loader 安装后调用 `session_lookup`（无参数 / 不存在 id）；再真的 `subagent` 派生一个子代理，用工具发现它并用子代理 id 反查 `role=subagent`、`parentSessionId` | 通过 |
-| UI 沙箱 | 无头 Chrome 打开沙箱 Web GUI：插件进入页面清单、控制台 0 错误；按钮 28×28 可见于「⋯」左侧、真实点击后 toast「会话 ID 已复制」；强制剪贴板失败时显示失败文案 | 通过 |
+| 离线单测 | `node --test`：严格 JSON-Schema 子集、required 覆盖、返回值按自身 schema 自校验、消息过滤、血缘拍平、分享存储（幂等/撤销/持久化/损坏文件/BOM）、HTML 转义（XSS）、分享视图、`session_share` 全流程 | 47/47 通过 |
+| headless 沙箱 | 真实 Loader：`session_lookup`（无参数 / 不存在 id）；真实 `subagent` 派生后用工具发现并反查 `role=subagent`、`parentSessionId`；`session_share` 在无 web server 的部署里返回结构化失败 | 通过 |
+| web 沙箱（真实 HTTP） | 端到端：RPC `share.create` → 公开页 `GET /share/<token>` **200 / 4.5 KB HTML**（含标题、用户/助手消息、只读徽标）→ `?download=1` 返回 `attachment; filename="dsh-session-share-….html"` → 未知 token **404** → `POST` **405** → `share.revoke` 后再访问 **404**；响应头带严格 CSP | 通过 |
+| UI 沙箱 | 真实浏览器：分享按钮可见（在复制按钮左侧）；点击打开「分享会话」对话框；创建后对话框显示真实链接与「复制链接 / 打开链接 / 下载 HTML / 停止分享」；toast「分享链接已创建」；两段式停止后 toast「已停止分享」并回到未分享态；分享期间 `fetch(url)` 200，撤销后同一 url 404 | 通过 |
+
+> 回归里抓到并修掉两个真 bug：一是 `share.create` 拿不到分享地址时先落盘再报错，留下
+> 打不开的孤儿记录；二是 `shares.json` 带 UTF-8 BOM 时被当成损坏文件，导致分享功能
+> 整个锁死。
 
 ## 开发笔记
 
 ```
-index.js          插件入口：注册工具、构建戳
+index.js          插件入口：分享存储、RPC、公开路由、工具注册
 lib/service.mjs   会话视图折叠（血缘 / 标题 / 消息 / 失败同一形状），可离线单测
-lib/tools.mjs     session_lookup 的参数与输出 schema（手写严格子集）
-client.js         浏览器半：手写 ModuleLoader bundle、复制按钮、toast、i18n
+lib/tools.mjs     session_lookup + session_share 的参数与输出 schema（手写严格子集）
+lib/shareview.mjs 分享页的数据装载（复用 service 的消息折叠）
+lib/render.mjs    自包含只读 HTML（转义、CSP、深浅色、打印友好）
+lib/shares.mjs    shares.json 存储（原子写、容忍 BOM、损坏不覆盖）
+lib/rpc.mjs       认证的创建/查询/撤销通道
+lib/public.mjs    免登录的 /share/<token> 只读路由
+client.js         浏览器半：手写 ModuleLoader bundle、复制/分享按钮、对话框、toast、i18n
 cordis.patch.yml  根作用域 insert 一行（不按 preset 挂载）
 ```
 
@@ -138,8 +175,9 @@ cordis.patch.yml  根作用域 insert 一行（不按 preset 挂载）
 - **浏览器半只能 require 两个说明符**：`react/jsx-runtime` 与
   `@deepseek-ai/dsh-client-ui-primitives`；没有 `useState` 时通过槽位 `hooks` 注入自己的
   快照源（`{ getSnapshot, subscribe }`），renderer 会把它绑成组件 props 上的 `useXxx`。
-- **改完必须回归**：`node --test` 看不见"插件没加载 / 槽位没声明 / 返回值过不了校验"，
-  得在真实 Loader 与真实浏览器里各跑一遍。
+- **改完必须回归**：`node --test` 看不见"插件没加载 / 槽位没声明 / 返回值过不了校验 / 路由
+  被回退吃掉"，得在真实 Loader 与真实浏览器里各跑一遍。分享功能的两个 bug 都是真实
+  HTTP/浏览器回归里才暴露的。
 
 ## License
 

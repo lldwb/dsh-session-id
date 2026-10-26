@@ -3,6 +3,53 @@
 本插件的改动都记在这里；版本号遵循 `.` 分段语义（大版本 = 结构性/破坏性，中版本 = 新能力，
 小版本 = 修复与文档）。
 
+## 0.2.0 — 2026-10-26
+
+会话增强。
+
+### 新增
+
+- **会话分享**（参考 DeepSeek 网页版的会话分享）：
+  - 浏览器半：标题栏新增「分享会话」按钮（复制按钮左侧），对话框内可创建链接、复制、
+    打开、下载单文件 HTML、两段式停止分享；
+  - Host 半：免登录只读路由 `GET /share/<token>`——24 字节随机 token、每次请求现读
+    会话日志（撤销即 404）、严格 CSP、页面不含会话 id / cwd / token / 工具参数；
+    `?download=1` 存成单文件 HTML 直接发给别人；
+  - 认证 RPC 通道 `/dsh-session-id`（`connection.admit` 校验）：`share.status` /
+    `share.create` / `share.revoke`；
+  - 新工具 `session_share`（create / status / revoke / list）：让 Agent 在用户明确要求
+    时也能分享；描述里写明"只在用户明确要求时调用"；
+  - 分享记录存 `<DSH_HOME>/dsh-session-id/shares.json`，只存
+    `{ sessionId, createdAt, includeDescendants }`，不存会话内容。
+- **插件显示名改为「会话增强」**（`meta.title` 与 locale）。包名 / 仓库名保留
+  `dsh-session-id`，避免已有安装路径与链接失效。
+
+### 修复（真实回归暴露）
+
+- `share.create` 在拿不到分享地址时先写记录再报错，会留下打不开的孤儿分享；现在先校验
+  origin 与会话存在性，再落盘。
+- `shares.json` 带 UTF-8 BOM（Windows 编辑器 / `Set-Content` 常见）时被当作损坏文件，
+  导致分享功能整体拒绝写入；现在读取时容忍 BOM。
+
+### 已验证
+
+- 离线单测 47/47：新增分享存储（幂等/撤销/持久化/损坏文件/BOM）、HTML 转义、分享视图、
+  `session_share` 全流程、`presentShare` 拼 URL、公开路由 token 解析。
+- headless 真实 Loader：`session_share` 在无 web server 的部署里返回结构化失败（不崩）；
+  `session_lookup` 与真实子代理发现仍通过。
+- web 沙箱真实 HTTP 端到端：`share.create` → 公开页 200（约 4.5 KB，含消息与只读徽标）→
+  下载返回 `attachment` 文件名 → 未知 token 404 → `POST` 405 → 撤销后再访问 404；
+  CSP 头存在。
+- UI 沙箱真实浏览器（沙箱 Web GUI + 无头 Chrome，真实鼠标事件）：分享按钮 28×28 位于复制
+  按钮左侧 → 打开「分享会话」对话框 → 「创建分享链接」得到真实链接（origin + `/share/` +
+  32 位 token）→ 「复制链接」toast「链接已复制」→ 两段式「停止分享 / 确认停止分享」→ 回到
+  未分享态并 toast「已停止分享」；分享期间 `fetch(url)` 返回 200（标题「会话分享」），撤销后
+  同一 url 返回 404；全程控制台 0 错误。
+- **说明**：分享页 HTML 里若出现会话 id，是消息正文本身包含它（用户/助手在对话里写了 id），
+  不是模板渲染泄漏；`cwd`、token、工具参数均不进入页面。
+- 已知限制（写进 README）：分享页需要部署可被访问（DSH 默认只监听 `127.0.0.1`；局域网用
+  `--host`，公网需反代/内网穿透/`--public-url`）；离线分享用「下载 HTML」；暂无口令与有效期。
+
 ## 0.1.2 — 2026-10-25
 
 ### 变更
