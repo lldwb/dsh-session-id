@@ -1,11 +1,11 @@
 {
   "name": "dsh-session-id",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "会话增强：复制会话 ID、按 ID 查会话与子代理、把会话分享成免登录只读链接，并在模型失败/停止后一键重试。",
   "type": "module",
   "license": "MIT",
   "private": true,
-  "icon": "./icon.png",
+  "icon": "./icon.svg",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
@@ -19,7 +19,7 @@
     "lib/**",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.png",
+    "icon.svg",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
