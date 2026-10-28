@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-id",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "会话增强：复制会话 ID、按 ID 查会话与子代理、把会话分享成免登录只读链接，并在模型失败/停止后一键重试。三个可单独启停的组件。",
   "type": "module",
   "license": "MIT",

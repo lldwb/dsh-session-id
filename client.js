@@ -289,6 +289,66 @@ window.__ModuleLoader__.load({
     }
     // #endregion
 
+    // #region 组件能力探测
+    /**
+     * 三个 Host 组件行的启用状态（浏览器半据此决定要不要渲染对应 UI）。
+     *
+     * ## 为什么需要探测
+     *
+     * 浏览器半是**包级一份**（`dsh.client` 不能按行拆），只要承载它的第一行还在，
+     * 它就一定被加载。而 Host 侧的「会话分享」「失败重试」是两条独立的 Loader 行，
+     * 可以在「设置 → 插件 → 会话增强 → 包含的组件」里单独停用。停用之后它们注册的
+     * RPC 前缀路由不再存在，请求会落到 SPA fallback —— 于是按钮还挂在标题栏 /
+     * composer 上，点一下却永远失败。这才是"组件拆了但边界没生效"。
+     *
+     * ## 信号
+     *
+     * Host 的 prefix 路由只在对应行启用时注册。实测（2026-10-28，真实 Loader）：
+     *
+     * - 组件在 → `POST /dsh-session-id`（或 `/dsh-turn-retry`）返回 **200** + 业务信封；
+     * - 组件停用 → 落到 SPA fallback，返回 **405**、空 body。
+     *
+     * 所以 `200 = 在`、`405 = 停用`。其它状态（401 / 5xx / 网络异常）无法判定，
+     * 一律按"在"处理（乐观）——宁可多一个按钮，也不要把正在工作的按钮撤掉。
+     */
+    const CAPABILITY_INITIAL = { share: true, retry: true };
+
+    /** 能力快照源：`{ share, retry }` 两个布尔值，两个 UI 贡献共用。 */
+    const capabilityStore = createSnapshotStore(CAPABILITY_INITIAL);
+
+    /**
+     * 探测一个组件的 Host 半是否在。
+     *
+     * 参数故意留空：探测只关心"这个通道回不回 HTTP 200"，不关心业务结果
+     * （缺 sessionId 会返回 `INVALID_REQUEST`/`BAD_REQUEST` 信封，那也是 200）。
+     *
+     * @param {string} url - 组件注册的 RPC 前缀路径。
+     * @param {string} method - 该通道必然认识的端点名。
+     * @returns {Promise<boolean>} true = 组件在。
+     */
+    async function probeComponent(url, method) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            // rpcId 只是回显用的关联 id；探测不看结果内容，只看 HTTP 状态。
+            body: JSON.stringify({ type: 'client-request', rpcId: `cap-${method}-${attempt}`, method, payload: {} })
+          });
+          if (response.status === 200) return true;
+          if (response.status === 405) return false;
+        } catch {
+          // 传输层异常：可能是页面刚起来、认证还没就绪，落到下面的重试。
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, 400 * (attempt + 1));
+        });
+      }
+      // 三次都判定不了：乐观保留 UI。
+      return true;
+    }
+    // #endregion
+
     // #region 剪贴板
     /**
      * 把文本写进剪贴板：现代 API 优先，失败降级到 `execCommand`。
@@ -711,7 +771,15 @@ window.__ModuleLoader__.load({
     function SessionShareButton(props) {
       const sessionId = props.sessionId;
       const state = props.useShare((value) => value);
+      // 能力探测：Host 侧的「会话分享」行被停用时，按钮与对话框一并收起。
+      // 必须在提前返回之前调用（hooks 顺序不能变）。
+      const capability = props.useCapability((value) => value.share);
       if (sessionId === undefined || sessionId === null || String(sessionId) === '') return null;
+      if (capability === false) {
+        // 与 RetryButton 同样的理由：返回隐藏占位而不是 null —— 组件保持挂载，
+        // 订阅才不会被拆掉（若之后组件被重新启用，能立刻恢复）。
+        return jsx('span', { style: { display: 'none' }, 'data-session-share': 'disabled' });
+      }
 
       const t = props.t;
       const actions = {
@@ -1529,6 +1597,12 @@ window.__ModuleLoader__.load({
        */
       function RetryButton(props) {
         const state = props.useRetryNotice((value) => value);
+        // 能力探测：Host 侧的「失败重试」行被停用时，整个覆盖层不渲染。
+        // 同样必须在提前 return 之前调用（hooks 顺序不能变）。
+        const capability = props.useCapability((value) => value.retry);
+        if (capability === false) {
+          return jsx('div', { style: { display: 'none' }, 'data-turn-retry': 'disabled' });
+        }
         if (state === null || state === undefined || state.kind === 'hidden') {
           return jsx('div', { style: { display: 'none' }, 'data-turn-retry': 'hidden' });
         }
@@ -1666,7 +1740,7 @@ window.__ModuleLoader__.load({
               inject: (sessionId) => {
                 const notice = createRetryNotice(ctx, String(sessionId ?? ''));
                 return {
-                  hooks: { retryNotice: notice },
+                  hooks: { retryNotice: notice, capability: capabilityStore },
                   retryNotice: notice
                 };
               }
@@ -1677,7 +1751,7 @@ window.__ModuleLoader__.load({
       }
       // #endregion
 
-      return { apply, inject, RetryButton, lastModelEventIsFailure, justEnded, attemptFinishedWithError };
+      return { apply, inject, RetryButton, RPC_CHANNEL, lastModelEventIsFailure, justEnded, attemptFinishedWithError };
     })();
     // #endregion
 
@@ -1709,6 +1783,19 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const t = ctx.locale.bind(NS);
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-session-id: 词典');
+
+      // 组件能力探测：只探测一次，结果写进 capabilityStore；两个 UI 贡献都订阅它。
+      //
+      // 探测**不阻塞**注册：先按"都在"渲染，探测出停用后再收起。这样既不会因为
+      // 一次网络抖动把按钮永久藏掉，也不会有"闪一下"的问题（正常情况探测结果与
+      // 初始值一致，store 的 set 在值没变时不通知）。
+      void Promise.all([
+        probeComponent(RPC_CHANNEL, 'share.status'),
+        probeComponent(retryHalf.RPC_CHANNEL, 'pending')
+      ]).then(([share, retry]) => {
+        const current = capabilityStore.getSnapshot();
+        if (current.share !== share || current.retry !== retry) capabilityStore.set({ share, retry });
+      });
 
       // 连续点击时让每条 Toast 都有新序号（key 变化 → 重新挂载 → 重新播放动画）。
       let nextSequence = 1;
@@ -1822,7 +1909,7 @@ window.__ModuleLoader__.load({
               };
 
               return {
-                hooks: { share: store },
+                hooks: { share: store, capability: capabilityStore },
                 openShare: () => {
                   if (id === '') return;
                   patch({ open: true });
