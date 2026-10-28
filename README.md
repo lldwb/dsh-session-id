@@ -1,26 +1,41 @@
 # 会话增强 · dsh-session-id
 
-一个插件三件事：**复制会话 ID**、**会话分享**、**失败重试**（外加让 Agent 按 id 查会话与子代理的工具）。
+**一个插件包，三个可单独启停的组件**：复制会话 ID、会话分享、失败重试。
 
 > 开源（MIT）。仓库地址：<https://github.com/lldwb/dsh-session-id>
 >
 > 插件显示名是**会话增强**；包名与仓库名保留 `dsh-session-id`（沿用已有安装路径与链接，
 > 不改名不会让 `dsh plugin add`、`link:` 依赖或外部引用失效）。
 >
+> **2.0.0 起拆成三个 Loader 行**：「设置 → 插件 → 会话增强 → 包含的组件」里会看到 3 个
+> 组件，每个都有独立开关。1.x 只有一行（三件事捆在一起，只能整体开关）。
+>
 > **原「失败重试」插件（`dsh-turn-retry`）已于 1.0.0 并入本插件**：它的目录、profile 行与
-> GitHub 仓库都已删除，重试能力现在由本插件的 `lib/retry/**` 与 client.js 的重试按钮提供。
-> 升级时请先卸载旧的 `dsh-turn-retry`，否则会出现两个重试按钮。
+> GitHub 仓库都已删除。升级时请先卸载旧的 `dsh-turn-retry`，否则会出现两个重试按钮。
 
 ## 三个组件
 
-| 组件 | 在哪 | 提供什么 |
+| 组件（界面显示名） | Loader 行 | 提供什么 |
 |---|---|---|
-| 会话 ID | 浏览器半 | 会话标题栏一个复制按钮：把当前会话 id 写进剪贴板并弹 toast |
-| 会话分享 | 浏览器半 + Host 半 | 生成免登录只读链接 `/share/<token>`：可复制、打开、下载单文件 HTML、停止分享 |
-| 失败重试 | 浏览器半 + Host 半 | 模型调用失败（自动重试耗尽）或用户点停止后，composer 右下角按钮变成「重试」，点一下直接重新调用模型 |
-| （配套工具） | Host 半 | `session_lookup` 按 id 查会话与全部子代理；`session_share` 让 Agent 在用户明确要求时创建/撤销分享 |
+| 会话增强 | `dsh-session-id` | 会话标题栏复制按钮 + 工具 `session_lookup`（按 id 查会话与全部子代理） |
+| 会话分享 | `dsh-session-id/share` | 标题栏分享按钮 + 工具 `session_share` + 免登录只读页 `/share/<token>` |
+| 失败重试 | `dsh-session-id/retry` | composer 的「重试」覆盖层 + `agent/request-error` 闸门 |
+
+> **为什么第一个组件叫「会话增强」而不是「会话 ID」**：浏览器半（三块界面）只能挂在
+> **精确包名**那一行上——`@deepseek-ai/dsh-client-modules` 的 `locatePkgJson()` 只接受
+> 精确包名，子路径 specifier 直接返回 `undefined`，那一行就不会有 client 半。所以第一行
+> 必须是 `dsh-session-id`，它的组件标题只能等于包根 `locale/`（也就是卡片标题「会话增强」）。
+> 另外两行是子路径，各自有 `share/locale/`、`retry/locale/`，所以能叫「会话分享」「失败重试」。
 
 三部分互相独立：只装 Host 半也能查会话，只装浏览器半也能复制 id / 分享 / 重试。
+
+### 停用某个组件之后
+
+浏览器半只有一份（`dsh.client` 是包级声明，不能按行拆），所以停用某个组件时：
+
+- 停用**会话分享** → 分享按钮仍在，点击提示「当前部署没有提供分享服务」（Host 侧 RPC 已不存在）；
+- 停用**失败重试** → 重试覆盖层因为 `pending` 调不通而保持隐藏，不影响其它按钮；
+- 停用**会话增强**（第一行）→ 三块界面随 client 半一起消失，`session_lookup` 也不可用。
 
 ## 安装
 
@@ -222,6 +237,7 @@ continue;   // ← 回到同一 turn/step 的模型请求
 | headless 沙箱 | 真实 Loader：`session_lookup`（无参数 / 不存在 id）；真实 `subagent` 派生后反查 `role=subagent`、`parentSessionId`；`session_share` 在无 web server 的部署里返回结构化失败；重试闸门在无活跃客户端时 fail-closed（不挂起） | 通过 |
 | web 沙箱（真实 HTTP） | RPC `share.create` → 公开页 200（约 4.5 KB，含消息与只读徽标）→ `?download=1` 返回 `attachment` → 未知 token 404 → `POST` 405 → 撤销后再访问 404；CSP 头存在 | 通过 |
 | UI 沙箱 | 真实浏览器：标题栏分享/复制按钮可见；分享对话框创建/复制/停止全流程；重试覆盖层在无失败态时是隐藏占位（注册成功）、composer 区域正常 | 通过 |
+| 2.0.0 拆分回归 | 单测 101/101；headless 真实 Loader 两工具均可用；UI 沙箱「设置 → 插件 → 会话增强」显示**包含的组件 共 3 个 · 3 运行中**，三行标题/描述分别来自包根、`share/locale/`、`retry/locale/` | 通过 |
 
 > 0.2.0 回归里抓到并修掉两个真 bug：`share.create` 拿不到地址时先落盘留下孤儿记录；
 > `shares.json` 带 UTF-8 BOM 时被当成损坏文件导致分享功能锁死。
@@ -229,9 +245,18 @@ continue;   // ← 回到同一 turn/step 的模型请求
 ## 开发笔记
 
 ```
-index.js            插件入口：分享存储、RPC、公开路由、工具注册、重试半接线
+index.js            组件①「会话增强」Host 半：注册 session_lookup（同时是包根导出）
+share/index.js      组件②「会话分享」Host 半：session_share + /share 路由 + 分享 RPC
+retry/index.js      组件③「失败重试」Host 半：agent/request-error 闸门 + 重试 RPC
+locale/             包根词典：卡片标题与组件①的标题/描述（两者共用这一份）
+share/locale/       组件②的标题/描述（子路径 specifier 不读包根 package.json）
+retry/locale/       组件③的标题/描述
+lib/build.mjs       三个组件共用的构建戳
 lib/service.mjs     会话视图折叠（血缘 / 标题 / 消息 / 失败同一形状），可离线单测
-lib/tools.mjs       session_lookup + session_share 的参数与输出 schema（手写严格子集）
+lib/tools.mjs       聚合门面（buildTools 兼容 1.x）+ re-export 两个构建器
+lib/tools/lookup.mjs  session_lookup 的参数与输出 schema（手写严格子集）
+lib/tools/share.mjs   session_share 的参数与输出 schema
+lib/tools/schema.mjs  两个工具共用的 schema 构造器
 lib/shareview.mjs   分享页的数据装载（复用 service 的消息折叠）
 lib/render.mjs      自包含只读 HTML（转义、CSP、深浅色、打印友好）
 lib/shares.mjs      shares.json 存储（原子写、容忍 BOM、损坏不覆盖）
@@ -242,9 +267,9 @@ lib/retry/gate.mjs  重试等待闸门（按会话去重、等待上限、孤儿
 lib/retry/recovery.mjs  「停止后可重试」记录（TTL）
 lib/retry/rpc.mjs   重试的认证 RPC 通道（/dsh-turn-retry，兼容旧名）
 lib/retry/diagnostics.mjs 重试诊断记录（diag 端点）
-client.js           浏览器半：三个组件 + 对话框 + toast + i18n（重试半用 IIFE 隔离作用域）
-cordis.patch.yml    根作用域 insert 一行（不按 preset 挂载）
-test/               分享/会话视图测试；test/retry/ 是并入的重试半测试
+client.js           浏览器半：三块界面 + 对话框 + toast + i18n（重试半用 IIFE 隔离作用域）
+cordis.patch.yml    根作用域 insert 三行（不按 preset 挂载）
+test/               分享/会话视图/三入口测试；test/retry/ 是并入的重试半测试
 ```
 
 - **严格 schema 是最大的坑**：第三方插件不能 `import defineTool`，参数与返回值都要手写
@@ -259,6 +284,15 @@ test/               分享/会话视图测试；test/retry/ 是并入的重试�
   `const retryHalf = (() => { … })();` 比逐个改名安全得多，也保留了它原有的注释与结构。
 - **改完必须回归**：`node --test` 看不见"插件没加载 / 槽位没声明 / 返回值过不了校验 / 路由
   被回退吃掉"，得在真实 Loader 与真实浏览器里各跑一遍。
+- **浏览器半只能挂在「精确包名」那一行**：`dsh-client-modules` 的 `locatePkgJson()` 对
+  `pkg/sub` 这种子路径 specifier 直接返回 `undefined`（`exactPackageSpecifier` 不认），
+  于是该行没有 client 半。2.0 拆三行时第一行因此必须写 `dsh-session-id`——这也是它的
+  组件标题只能等于卡片标题的原因。改 patch 时别把第一行换成子路径，否则界面按钮会整体消失。
+- **组件行文案走的是另一套逻辑**：`dsh-app-boot` 的 `readPluginMeta()` 对子路径 specifier
+  **不读** `specifier/package.json`，标题/描述只来自 `<specifier>/locale/en.json` 的
+  `meta`，并且 `exports` 必须暴露 `<子路径>/locale/*.json`（否则静默回退到裸 specifier）。
+- **`node_modules` 形态会决定 client 半是否出现**：以 `link:` 指向**源码目录**安装时，
+  client 半可能进不了页面清单；要验证 UI 就用 `pnpm pack` 打成 tarball 再装（真实目录）。
 
 ## License
 

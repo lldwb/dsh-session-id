@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-id",
-  "version": "1.0.3",
-  "description": "会话增强：复制会话 ID、按 ID 查会话与子代理、把会话分享成免登录只读链接，并在模型失败/停止后一键重试。",
+  "version": "2.0.0",
+  "description": "会话增强：复制会话 ID、按 ID 查会话与子代理、把会话分享成免登录只读链接，并在模型失败/停止后一键重试。三个可单独启停的组件。",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -9,13 +9,21 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./share": "./share/index.js",
+    "./retry": "./retry/index.js",
     "./client": "./client.js",
     "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./share/locale/*.json": "./share/locale/*.json",
+    "./retry/locale/*.json": "./retry/locale/*.json",
+    "./share/icon": "./icon.svg",
+    "./retry/icon": "./icon.svg"
   },
   "files": [
     "index.js",
     "client.js",
+    "share/**",
+    "retry/**",
     "lib/**",
     "cordis.patch.yml",
     "locale/*.json",
@@ -56,7 +64,7 @@
   },
   "meta": {
     "title": "会话增强",
-    "description": "一个插件三件事：复制会话 ID、按 ID 查会话与子代理、会话分享成只读链接；模型失败或停止后一键重试。"
+    "description": "三个独立组件：复制会话 ID 并按 ID 查会话与子代理；把会话分享成免登录只读链接；模型失败或停止后一键重试。"
   },
   "dsh": {
     "bundle": {

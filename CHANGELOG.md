@@ -3,6 +3,60 @@
 本插件的改动都记在这里；版本号遵循 `.` 分段语义（大版本 = 结构性/破坏性，中版本 = 新能力，
 小版本 = 修复与文档）。
 
+## 2.0.0 — 2026-10-28
+
+**结构性变更**：「一个插件三件事」拆成**三个可单独启停的组件**（三个 Loader 行）。
+
+### 为什么
+
+界面上每个 Loader 行就是一个「组件」，带独立开关。1.x 只有一行，用户只能整体启用/停用
+「会话增强」，没法"只留复制 ID、关掉分享和重试"。拆开后「设置 → 插件 → 会话增强 →
+包含的组件」显示 **3 个组件**，每个都能单独停用。
+
+### 变更（结构性）
+
+- `cordis.patch.yml` 由 insert 一行改为 **三行**：
+
+  | 行 id | Loader name | 组件 |
+  |---|---|---|
+  | `dsh-session-id` | `dsh-session-id` | 会话增强（= 会话 ID + 浏览器半） |
+  | `dsh-session-id-share` | `dsh-session-id/share` | 会话分享 |
+  | `dsh-session-id-retry` | `dsh-session-id/retry` | 失败重试 |
+
+- `index.js` 只保留会话 ID 组件的 Host 半（`session_lookup`）；分享与重试分别搬到
+  `share/index.js`、`retry/index.js`。
+- `lib/tools.mjs` 拆成 `lib/tools/{lookup,share,schema}.mjs`；`buildTools()` 保留为
+  兼容门面（仍一次返回两个工具，行为与 1.x 一致，离线单测零改动）。
+- 新增 `lib/build.mjs`：三个组件共用的构建戳。
+- 新增 `share/locale/`、`retry/locale/` 与对应 `exports`：组件行的标题/描述来自
+  **各自子路径**的 locale——`dsh-app-boot` 的 `readPluginMeta()` 对子路径 specifier
+  **不读** `package.json`，只读 `<specifier>/locale/en.json`。
+- `exports` 新增 `./share`、`./retry`、`./share/locale/*.json`、`./retry/locale/*.json`、
+  `./share/icon`、`./retry/icon`。
+
+### 注意（升级要知道的）
+
+- **浏览器半仍是包级一份**，只能挂在**精确包名**那一行：`dsh-client-modules` 的
+  `locatePkgJson()` 对子路径 specifier 直接返回 `undefined`。所以三块界面都挂在第一行
+  `dsh-session-id` 上，并因此：
+  - 停用「会话分享」→ 分享按钮仍在，点击提示「当前部署没有提供分享服务」；
+  - 停用「失败重试」→ 重试覆盖层因 `pending` 调不通而保持隐藏；
+  - 停用第一行「会话增强」→ 三块界面一起消失（client 半随该行卸载）。
+- 第一行的组件显示名是「会话增强」（与卡片同名），因为它的标题只能来自包根 `locale/`；
+  另外两行才叫「会话分享」「失败重试」。
+- 从 1.x 升级：`dsh plugin add` 后 patch 自动变三行。旧的 `dsh-turn-retry` 仍需卸载，
+  否则会出现两个重试按钮。
+
+### 已验证
+
+- 离线单测 **101/101**（原 97 + 新增 4：三入口形状与 name、各入口注册物、分享存储路径）。
+- headless 沙箱真实 Loader：`session_lookup` 与 `session_share` 均可调用（三行都加载成功）。
+- UI 沙箱（tarball 安装，非 link）：`dsh-session-id@2.0.0 is loaded: its client half is in
+  the page's manifest`；「包含的组件 **共 3 个 · 3 运行中**」，三行标题/描述分别来自包根、
+  `share/locale/`、`retry/locale/`；重试覆盖层占位 `[data-turn-retry]` 存在（第三块 UI 注册成功）。
+- 拆分经过一次真实返工：最初三行都写成子路径，UI 沙箱直接报 "client half is absent from the
+  page's manifest"——这就是上面「精确包名」那条约束的来源。
+
 ## 1.0.3 — 2026-10-27
 
 ### 变更

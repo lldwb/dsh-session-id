@@ -1,19 +1,39 @@
-# dsh-session-id（显示名：会话增强）—— 全局挂载。
+# dsh-session-id（显示名：会话增强）—— 全局挂载，三个可单独启停的组件。
 #
-# 这里**故意**不按 preset 挂载：
-# - 浏览器半是会话标题栏的两个按钮（复制 ID / 分享会话）与 composer 的重试按钮，
-#   属于 Web 外壳的通用能力；
-# - Host 半的工具（session_lookup / session_share）、/share/<token> 公开路由与
-#   agent/request-error 重试闸门，要在任何模式、任何会话里都能用。
+# 2.0 起这个包向 Loader 插入**三行**（1.x 只有一行）：
 #
-# 本行 id 同时是浏览器半的 locale 命名空间、`ctx.slots.register` 的 id 前缀、认证 RPC
-# 通道 `/dsh-session-id` 的路径；但**不是**设置命名空间：本插件没有设置页，也没有
-# Config 字段。改 id 要同步改 index.js 的 `name`、client.js 的 `NS` 常量与
-# lib/rpc.mjs 的 `RPC_CHANNEL`。
+# | 行 id                | Loader name            | 组件     | 内容 |
+# |----------------------|------------------------|----------|------|
+# | `dsh-session-id`     | `dsh-session-id`       | 会话 ID   | 工具 `session_lookup`；**浏览器半（三块界面）都挂在这一行** |
+# | `dsh-session-id-share` | `dsh-session-id/share` | 会话分享 | 工具 `session_share`、`GET /share/<token>`、RPC `/dsh-session-id` |
+# | `dsh-session-id-retry` | `dsh-session-id/retry` | 失败重试 | `agent/request-error` 闸门、RPC `/dsh-turn-retry` |
 #
-# 原 `dsh-turn-retry`（失败重试）插件已并入本插件：它的 Loader 行、目录与 GitHub
-# 仓库都已删除，重试能力现在由本行的 `lib/retry/**` + client.js 的重试按钮提供。
-# 重试半的 RPC 通道保留旧名 `/dsh-turn-retry`（只影响插件内部，避免无谓回归）。
+# ## 为什么第一行必须是「精确包名」
+#
+# 浏览器半由 `@deepseek-ai/dsh-client-modules` 按 Loader 行收集：`locatePkgJson(row.name)`
+# 只接受**精确包名**，子路径 specifier（`pkg/sub`）直接返回 undefined，该行就不会有
+# client 半。所以携带 `client.js` 的那一行只能写 `dsh-session-id`——这也是唯一一行
+# 组件标题等于包根 `locale/`（即卡片标题「会话增强」）的原因。
+#
+# 三个组件的显示名分工：
+# - 第一行读包根 `locale/`：标题「会话增强」（与卡片同名，因为它同时是主组件）；
+# - 第二、三行读 `share/locale/`、`retry/locale/`：标题「会话分享」「失败重试」。
+#
+# 为什么拆：界面上每个 Loader 行都是一个可单独启用/停用的「组件」，一行装三件事
+# 时用户只能整体开关。拆开后可以只留会话 ID、关掉分享或重试。
+#
+# ## 停用某一行之后
+#
+# 浏览器半只有一份（`dsh.client` 是包级声明），所以停用「会话分享」或「失败重试」时，
+# 界面上的对应按钮仍在：点击会得到明确的「当前部署没有提供分享服务」提示（重试覆盖层
+# 则因为 `pending` 调不通而保持隐藏）。要完全移除界面按钮，停用第一行即可。
+#
+# 不按 preset 挂载：复制 id、查会话、分享会话、失败重试都是 Web 外壳与任何模式的
+# 通用能力。
 - insert:
     - id: dsh-session-id
       name: 'dsh-session-id'
+    - id: dsh-session-id-share
+      name: 'dsh-session-id/share'
+    - id: dsh-session-id-retry
+      name: 'dsh-session-id/retry'

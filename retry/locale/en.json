@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Retry failed turns",
+    "description": "When a model call fails or the user stops a turn, the composer button becomes Retry: click it to re-run the model in place, without appending a user message."
+  }
+}
