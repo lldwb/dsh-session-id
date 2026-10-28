@@ -3,6 +3,43 @@
 本插件的改动都记在这里；版本号遵循 `.` 分段语义（大版本 = 结构性/破坏性，中版本 = 新能力，
 小版本 = 修复与文档）。
 
+## 2.0.2 — 2026-10-28
+
+修「停止后重试」会**弄崩官方消息队列 dock** 的问题（界面报 `slot entry crashed in
+'conversation.input.dock'`）。
+
+### 修复
+
+- **`agent.followup()` 的 input 改成完整的 inbox 消息结构**。它会被
+  `agent-loop` 原样塞进 `inbox["next-turn"]`（`followup(input) { this.send(input, "next-turn", true) }`），
+  而官方的队列 dock（`dsh-client-conversation` 的 `QueueDock`）会把它当"排队中的一条消息"
+  渲染，读 `row.id` / `row.content[].text` / `row.source.kind`。原来只传
+  `{ content, source: { kind: 'dsh-session-id' } }`：
+  - 缺 `id` → inbox 投影按 `message.id` 去重时会拿到 undefined；
+  - `source.kind` 不是 `user` → 队列 dock 走非用户分支，读 `source.text` 时崩
+    （`Cannot read properties of null (reading 'text')`）。
+  现在传 `{ id: <uuid>, content: [...], source: { kind: 'user' } }`，并把
+  `source.kind` 统一为 `user`（followup 的语义本来就是"排一条用户消息"）。
+- 新增导出 `createRetryMessageId()`（`node:crypto` 的 `randomUUID`），生产唯一消息 id。
+- `RETRY_SOURCE_KIND` 保留导出但不再用于 followup（旧的会话记录仍能对上号）。
+
+### 已验证
+
+真机 UI 沙箱矩阵（`model-overlay` 里的 `fake-unreachable` 供应商制造真实
+`MISSING_CREDENTIAL` 失败）：
+
+| 场景 | 结果 |
+|---|---|
+| 模型失败 | 按钮 `waiting`「模型调用失败 —— 点击重试」 |
+| 点击重试（闸门） | `user-retry via:"gate"` + `gate-closed reason:"retry"`，原地重跑 |
+| 用户停止 | 按钮变「已停止 —— 点击重试」+ `stop-recorded` |
+| 停止后重试 | `user-retry via:"followup" outcome:true`，新 turn 启动，**控制台 0 错误** |
+| 三行全开 | `[data-turn-retry="hidden"]`；分享/复制按钮都在 |
+| 停用 retry 行 | `[data-turn-retry="disabled"]`，无按钮，通道 405 |
+| 停用 share 行 | `[data-session-share="disabled"]`，标题栏只剩复制按钮 |
+| 停用第一行 | client 半不进页面清单，三块 UI 全部消失 |
+| 分享端到端 | 创建 → 公开页 200（CSP 在）→ `?download=1` 返回 attachment → 两段式停止 → 撤销后 404 |
+
 ## 2.0.1 — 2026-10-28
 
 修 2.0.0 的组件边界漏洞：**停用「会话分享」或「失败重试」组件后，浏览器半的对应 UI 仍然在。**
